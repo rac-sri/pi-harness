@@ -54,6 +54,7 @@ You are in EXECUTE mode: full tool access.
 let mode: Mode = DEFAULT_MODE;
 let saved: string[] | undefined; // full active set captured when restricting
 
+const PLAN_DISABLED = new Set(["edit", "write", "lens_diagnostic_mark", "ast_grep_replace", "pi_lens_activate_tools"]);
 const DISCUSS_DISABLED = new Set(["read", "grep", "find", "ls", "edit", "write", "bash", "lens_diagnostics", "symbol_search", "module_report", "project_report", "read_symbol", "read_enclosing", "effective_config", "pi_lens_activate_tools"]);
 
 export default function (pi: ExtensionAPI) {
@@ -73,7 +74,7 @@ export default function (pi: ExtensionAPI) {
 		saved ??= active;
 		const base = saved;
 		if (mode === "discuss") pi.setActiveTools(base.filter((t) => !DISCUSS_DISABLED.has(t)));
-		else pi.setActiveTools(base.filter((t) => t !== "edit" && t !== "write"));
+		else pi.setActiveTools(base.filter((t) => !PLAN_DISABLED.has(t)));
 	};
 
 	const setMode = (next: Mode, ctx: ExtensionContext) => {
@@ -108,8 +109,8 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (mode === "plan") {
-			if (event.toolName === "edit" || event.toolName === "write") {
-				return { block: true, reason: "PLAN mode is read-only. Use /mode execute to change files." };
+			if (PLAN_DISABLED.has(event.toolName)) {
+				return { block: true, reason: `PLAN mode: ${event.toolName} is disabled. Use /mode execute to change files.` };
 			}
 			if (event.toolName === "bash" && !isReadOnlyCommand(String(event.input.command ?? ""))) {
 				return { block: true, reason: `PLAN mode: only read-only commands allowed. Blocked: ${String(event.input.command ?? "").slice(0, 80)}` };
