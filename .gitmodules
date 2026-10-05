@@ -1,0 +1,3 @@
+[submodule "agent/skills/ethskills"]
+	path = agent/skills/ethskills
+	url = https://github.com/austintgriffith/ethskills
