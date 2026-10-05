@@ -108,11 +108,29 @@ repo-controlled prompts can run bash).
 
 - Extension: `~/.pi/agent/extensions/modes/index.ts` — three-position mode switch for the MAIN session; `/mode discuss|plan|execute`, bare `/mode` = status, Ctrl+Alt+M cycles. **Default on new sessions: DISCUSS.**
 - Each mode = tool-activation filtering + `tool_call` gates (defense-in-depth) + a `[MODE: ...]` instruction injected every run:
-  - **discuss**: no read/edit/write/bash/lens; only web tools, advisor, and subagent dispatch restricted to the `discuss` agent
+  - **discuss**: read-only repo inspection (`read`/`grep`/`find`/`ls` + read-only code intelligence); `bash`/`edit`/`write`/`pi_lens_activate_tools` blocked; web tools, advisor, and subagent dispatch restricted to the `discuss` agent
   - **plan**: read-only; edit/write off; bash allowlisted to read-only commands (`find -delete`/`-exec`, redirects, rm/mv/npm/git-writes all rejected); subagent dispatch restricted to scout/planner/reviewer/discuss (executor blocked)
   - **execute**: everything restored; checklist/checkpoint doctrine in the injected prompt
 - Subagent children are exempt from the main mode switch (`PI_SUBAGENT_CHILD=1`), but scout/reviewer bash calls use the shared read-only policy (`PI_SUBAGENT_READ_ONLY=1`, inherited by descendants). Restricted main modes only dispatch personal agents, preventing project definitions from overriding allowed roles.
 - Regression suite: `node agent/tests/harness.test.mjs` from `~/.pi` using Node >=22.19.0 (Pi 1.0.1's runtime requirement). Tests cover command policy, canonical paths, mode injection/gates, zero-tool dispatch, cancellation escalation, sandbox policy, and extension loading. Restart Pi sessions after changing extensions.
+  - The full suite aborts inside a sandboxed Pi shell (`EPERM` lstat on `agent/auth.json` during the creds-guard symlink check). These slices run safely from any shell: `agent/tests/modes-check.mjs` (mode activation/gates/injection), `agent/tests/advisor-config-check.mjs` (advisor config), `agent/tests/advisor-session-header.mjs` (Advisor session-id patch), `agent/tests/advisor-patch-guard.mjs` (patch self-healing guard).
+
+## Advisor model (pi-advisor-flow)
+
+`advisor.json` pairs a fast Executor with a stronger Advisor; the same-model guard skips calls when both match, so the two must differ.
+
+```json
+{ "executor": "opencode-go/qwen3.8-flash", "advisor": "opencode-go/kimi-k3" }
+```
+
+Executor = the session default (cheap, high request allowance); Advisor = `kimi-k3`, the strongest reasoning model on the OpenCode Go catalog (490 requests/month allowance — the Advisor only sees the conversation, so it is rarely the bottleneck). Edit the file or use `/advisor-models` (pick Executor, Advisor, optional fallback) and `/advisor-settings` (plan/failure/completion gates, git context, effort, whitelist). Unknown keys are preserved but warned about; only keys from the plugin's schema are valid (e.g. `advisor`, `advisorFallbackModel`, `advisorEffort`, `alwaysOn`). Requires `packages: ["npm:pi-advisor-flow"]` in `settings.json` and a session restart. Validate an edit with `node agent/tests/advisor-config-check.mjs` (schema-validates `advisor.json` and asserts advisor ≠ executor).
+
+- **Local patch (required for OpenCode advisors).** pi-advisor-flow 0.11.1 builds Advisor stream options as `{reasoning, signal}` and never passes a session id, but pi-ai derives `x-opencode-session` only from `options.sessionId` (`pi-ai/dist/providers/opencode-headers.js`). OpenCode Go now rejects requests without it (`400 {"type":"MissingSessionID"}`), so **every consultation against an `opencode-go/*` Advisor failed** while the Executor was fine — Pi's agent loop supplies `sessionId` (`core/agent-session.js`) and the Advisor runs outside that loop. Three layers keep the fix in place:
+  1. `agent/patches/advisor-session-header.mjs` threads `ctx.sessionManager.getSessionId()` through `ResolvedConfiguredModel` into both stream paths. Literal anchors from 0.11.1, idempotent, exits non-zero with `UPSTREAM CHANGED` if an anchor stops matching exactly once, and accepts a package dir so tests can run it against a pristine tarball.
+  2. `npm/package.json` `postinstall` re-applies it, because `pi update` replaces the package (`package.json` → `pi.extensions: ["./dist/index.js"]`, so `dist/index.js` is the file that actually runs; `src/model-stream.ts` is patched in step for parity).
+  3. `extensions/advisor-patch-guard.ts` re-checks the loaded bundle at extension load and, if it reverted, re-applies and notifies on `session_start`. Extensions are imported at startup, so `/reload` can still be needed for the live process; the guard only guarantees the on-disk fix.
+  Proven by `node agent/tests/advisor-session-header.mjs` (8 checks: the id reaches `streamSimple` *and* `stream`, `withOpenCodeSessionHeader` yields the header only when it is present, the patched bundle loads with zero extension-loader errors, script output is byte-identical to the installed files) and `node agent/tests/advisor-patch-guard.mjs` (7 checks on a pristine `pi-advisor-flow@0.11.1` fixture: re-applies when unpatched, byte-identical when already patched, silent no-op when the plugin is absent). Upstream report still owed: https://github.com/philipbrembeck/pi-advisor
+- No `advisorFallbackModel` on purpose: a fallback would mask header/auth/config failures instead of surfacing them.
 
 ## Known env issue
 

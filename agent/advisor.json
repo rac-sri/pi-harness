@@ -1,3 +1,4 @@
 {
-  "executor": "opencode-go/qwen3.8-flash"
+  "executor": "opencode-go/qwen3.8-flash",
+  "advisor": "opencode-go/kimi-k3"
 }

@@ -1,0 +1,21 @@
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+
+const root = "/Users/rachitsrivastava/.pi/agent";
+const version = fs.readFileSync(path.join(root, "install/current-version"), "utf8").trim();
+const modules = path.join(root, "install/releases", version, "node_modules");
+const require = createRequire(path.join(modules, "@earendil-works/pi-coding-agent/package.json"));
+const { createJiti } = require("jiti");
+const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false });
+const pkg = path.join(root, "npm/node_modules/pi-advisor-flow/src/config");
+const { validateConfig, unknownConfigKeys } = await jiti.import(path.join(pkg, "validation.ts"));
+const raw = JSON.parse(fs.readFileSync(path.join(root, "advisor.json"), "utf8"));
+const config = JSON.parse(fs.readFileSync(path.join(root, "advisor.json"), "utf8"));
+validateConfig(config);
+const unknown = unknownConfigKeys(config);
+console.log("advisor.json:", JSON.stringify(raw));
+console.log("validateConfig:", "accepted");
+console.log("unknown keys:", unknown.length ? unknown : "(none)");
+if (raw.advisor === raw.executor) throw new Error("advisor equals executor — same-model guard would skip every consultation");
+console.log("advisor !== executor:", raw.executor, "->", raw.advisor);

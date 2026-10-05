@@ -100,7 +100,11 @@ if (process.argv.includes("--mode")) {
 	}
 	const ctx = { cwd: path.dirname(root), ui: { notify() {} } };
 	const first = await hooks.get("before_agent_start")({});
-	check(!active.includes("grep") && !active.includes("ls"), "discuss removes all file tools");
+	check(active.includes("read") && active.includes("grep") && active.includes("ls") && active.includes("find"), "discuss keeps read-only repo tools");
+	check(!active.includes("bash") && !active.includes("edit") && !active.includes("write"), "discuss removes execute/write tools");
+	check((await hooks.get("tool_call")({ toolName: "bash", input: { command: "ls" } })).block, "discuss blocks bash");
+	check((await hooks.get("tool_call")({ toolName: "edit", input: {} })).block, "discuss blocks edit");
+	check((await hooks.get("tool_call")({ toolName: "read", input: { path: "HARNESS.md" } })) === undefined, "discuss allows read");
 	const second = await hooks.get("before_agent_start")({});
 	const filtered = await hooks.get("context")({ messages: [{ role: "custom", ...first.message }, { role: "user", content: "hello" }, { role: "custom", ...second.message }] });
 	check(filtered.messages.length === 2 && filtered.messages[1].content.includes("[MODE: DISCUSS]"), "only fresh mode instructions retained");
@@ -139,7 +143,7 @@ if (process.argv.includes("--mode")) {
 	await assert.rejects(sandboxHooks.get("user_bash")().operations.exec(), /Sandbox unavailable/); checks++;
 
 	const loader = await import(path.join(modules, "@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"));
-	const loaded = await loader.loadExtensions(["creds-guard.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts"].map(p => path.join(root, "extensions", p)), root);
+	const loaded = await loader.loadExtensions(["creds-guard.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts"].map(p => path.join(root, "extensions", p)), root);
 	assert.deepEqual(loaded.errors, []); checks++;
-	console.log(`Passed ${checks} harness regression checks; all four extensions load.`);
+	console.log(`Passed ${checks} harness regression checks; all five extensions load.`);
 }

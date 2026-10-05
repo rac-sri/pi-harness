@@ -1,7 +1,7 @@
 /**
  * modes: three-position harness mode switch for the main session.
  *
- *   /mode discuss   (DEFAULT)  pure reasoning; no repo access, only the "discuss" subagent
+ *   /mode discuss   (DEFAULT)  reasoning + read-only repo inspection; no bash, no edits, only the "discuss" subagent
  *   /mode plan      read-only exploration; orchestrates scout/planner; vault plan files
  *   /mode execute   full tools; works plan checklists with verify gates + checkpoint commits
  *
@@ -22,11 +22,12 @@ const CONTEXT_TAG: Record<Mode, string> = {
 };
 
 const DISCUSS_MODE_INSTRUCTIONS = `${CONTEXT_TAG.discuss}
-You are in DISCUSS mode (the default). You have no file tools and cannot inspect this repository.
+You are in DISCUSS mode (the default): you may READ the working tree, but you cannot run commands or change files.
+- read/grep/find/ls and the read-only code-intelligence tools are available. Ground every claim about this repo in what you actually read, and cite the path (with line) you read it from.
 - Reason about architecture, protocols, cryptography, concurrency, latency, tradeoffs.
-- You may dispatch the "discuss" subagent (isolated, tool-less) for deeper brainstorming, and use web tools for research.
-- NEVER claim knowledge of files, code, or session history you were not given. Ask for excerpts or request the user switch modes: /mode plan (read-only analysis) or /mode execute (code work).
-- When the user clearly wants code changes, stop and tell them to run /mode plan or /mode execute. Do not apologize for the boundary; reasoning first is a feature.`;
+- You may dispatch the "discuss" subagent (isolated, tool-less) for deeper brainstorming, and use web tools for research. It sees nothing: paste any file excerpts it needs into the task text.
+- NEVER claim knowledge of files, code, or session history you were not given — read them instead.
+- Reading is the ceiling here: no bash, no edits. When the user wants code changes or command execution (builds, tests, git), stop and tell them to run /mode plan (read-only analysis + the scout/planner fleet) or /mode execute (code work). Do not apologize for the boundary; reasoning first is a feature.`;
 
 const PLAN_MODE_INSTRUCTIONS = `${CONTEXT_TAG.plan}
 You are in PLAN mode: read-only against the working tree.
@@ -54,8 +55,9 @@ You are in EXECUTE mode: full tool access.
 let mode: Mode = DEFAULT_MODE;
 let saved: string[] | undefined; // full active set captured when restricting
 
+// Read-only tools stay available in DISCUSS: inspect the working tree, never run or change it.
 const PLAN_DISABLED = new Set(["edit", "write", "lens_diagnostic_mark", "ast_grep_replace", "pi_lens_activate_tools"]);
-const DISCUSS_DISABLED = new Set(["read", "grep", "find", "ls", "edit", "write", "bash", "lens_diagnostics", "symbol_search", "module_report", "project_report", "read_symbol", "read_enclosing", "effective_config", "pi_lens_activate_tools"]);
+const DISCUSS_DISABLED = new Set([...PLAN_DISABLED, "bash"]);
 
 export default function (pi: ExtensionAPI) {
 	// Subagent children run under their agent .md capability policy, not session
@@ -84,11 +86,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		mode = next;
 		apply(pi.getActiveTools());
-		ctx.ui.notify(`${CONTEXT_TAG[next]} active. ${next === "discuss" ? "No repo access; only the discuss subagent." : next === "plan" ? "Read-only; scout/planner only." : "Full access; checklists + checkpoint commits."}`, "info");
+		ctx.ui.notify(`${CONTEXT_TAG[next]} active. ${next === "discuss" ? "Read-only repo access; no bash, no edits." : next === "plan" ? "Read-only; scout/planner only." : "Full access; checklists + checkpoint commits."}`, "info");
 	};
 
 	// Re-assert activation on every run so ordering vs other extensions can't drift.
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async () => {
 		apply(pi.getActiveTools());
 		const content = mode === "discuss" ? DISCUSS_MODE_INSTRUCTIONS : mode === "plan" ? PLAN_MODE_INSTRUCTIONS : EXECUTE_MODE_INSTRUCTIONS;
 		return { message: { customType: "harness-modes", content, details: { mode } } };
@@ -100,7 +102,9 @@ export default function (pi: ExtensionAPI) {
 		return { messages: event.messages.filter((m, i) => (m as { customType?: string }).customType !== "harness-modes" || i === latest) };
 	});
 
-	// Defense-in-depth: gate tools that survived activation race.
+	// Defense-in-depth: gate tools that survived the activation race.
+	// Read-only tools (read/grep/find/ls + code intelligence) are NOT gated in
+	// discuss mode — inspecting the working tree is allowed; running and editing are not.
 	pi.on("tool_call", async (event) => {
 		if (mode === "execute") return undefined;
 

@@ -5,5 +5,8 @@
     "pi-advisor-flow": "^0.11.1",
     "pi-lens": "^4.3.0",
     "pi-web-access": "^0.36.0"
+  },
+  "scripts": {
+    "postinstall": "node ../patches/advisor-session-header.mjs node_modules/pi-advisor-flow || echo 'pi-advisor-flow patch not applied; run: node agent/patches/advisor-session-header.mjs'"
   }
 }
