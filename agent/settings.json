@@ -1,0 +1,10 @@
+{
+  "lastChangelogVersion": "1.0.1",
+  "defaultProvider": "opencode-go",
+  "defaultModel": "qwen3.8-flash",
+  "packages": [
+    "npm:pi-web-access",
+    "npm:pi-advisor-flow",
+    "npm:pi-lens"
+  ]
+}

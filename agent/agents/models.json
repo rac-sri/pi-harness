@@ -1,0 +1,9 @@
+{
+  "_comment": "Authoritative model selection for managed Pi launches and subagents. Main launches use default unless an explicit CLI model/provider/models is supplied. Subagents use their role entry; null or omitted entries use default, never the active session or frontmatter model. Read fresh on every launch/dispatch. Value format: provider/model[:thinking]. Underscore-prefixed keys are comments.",
+  "default": "opencode-go/qwen3.8-flash",
+  "scout": "opencode-go/deepseek-v4.1-flash",
+  "planner": "opencode-go/glm-5.3",
+  "executor": "opencode-go/kimi-k2.7-code",
+  "reviewer": null,
+  "discuss": "opencode-go/kimi-k3"
+}

@@ -1,0 +1,23 @@
+# Dependencies at any depth.
+node_modules
+
+# Credentials and local provider state.
+agent/auth.json
+agent/models-store.json
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.dist
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local installations, session history, caches and crash reports.
+agent/install/
+agent/sessions/
+agent/web-search-cache/
+agent/crashes.json
+.DS_Store
