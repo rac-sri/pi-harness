@@ -59,6 +59,9 @@ if ! pi_supported_node "$pi_node"; then
 fi
 # Agent model JSON supplies launch defaults. Explicit CLI selections still win.
 pi_has_model=false
+case "${1-}" in
+  install|remove|uninstall|update|list|config|auth|mcp) pi_has_model=true ;;
+esac
 for pi_argument in "$@"; do
   case "$pi_argument" in
     --model|--provider|--models) pi_has_model=true ;;

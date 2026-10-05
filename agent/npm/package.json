@@ -2,8 +2,8 @@
   "name": "pi-extensions",
   "private": true,
   "dependencies": {
-    "pi-advisor-flow": "^0.11.0",
+    "pi-advisor-flow": "^0.11.1",
     "pi-lens": "^4.3.0",
-    "pi-web-access": "^0.35.0"
+    "pi-web-access": "^0.36.0"
   }
 }

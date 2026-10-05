@@ -54,9 +54,14 @@ if (process.argv.includes("--mode")) {
 		assert.deepEqual(launch(["--model", "other/model"]), ["--model", "other/model"]); checks++;
 		assert.deepEqual(launch(["--provider", "other", "--model", "model"]), ["--provider", "other", "--model", "model"]); checks++;
 		assert.deepEqual(launch(["--models", "other/*"]), ["--models", "other/*"]); checks++;
+		for (const command of ["install", "remove", "uninstall", "update", "list", "config", "auth", "mcp"]) {
+			const args = command === "update" ? [command, "--extensions", "--help"] : [command, "--help"];
+			assert.deepEqual(launch(args), args); checks++;
+		}
 		fs.writeFileSync(modelFile, JSON.stringify({ default: "provider/changed" }));
 		check(launch([])[1] === "provider/changed", "launcher reloads edited JSON");
 		fs.writeFileSync(modelFile, "{}");
+		assert.deepEqual(launch(["update", "--extensions", "--help"]), ["update", "--extensions", "--help"]); checks++;
 		assert.throws(() => launch([])); checks++;
 	} finally { fs.rmSync(launchFixture, { recursive: true, force: true }); }
 	for (const command of ["git branch new-name", "git remote add x https://example.invalid", "sort -o result input", "sort --compress-program=./script input", "rg --pre=./script needle .", "find . -delete", "find . -fprint result", "uniq input output", "date 100512002026", "node", "node --version script.js", "echo $(touch x)", "echo `touch x`", "echo x > result", "git show --textconv", "git diff --no-ext-diff --no-textconv --output=result", "cat <(touch x)", "git 'branch' new-name"]) check(!isReadOnlyCommand(command), `reject ${command}`);
