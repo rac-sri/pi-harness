@@ -5,7 +5,7 @@ Request: $@
 
 Determine <repo> = the absolute path of the current working directory's git root (or cwd), <project> = its directory name, and <date> = today's date via `date +%F`. Prefix every planner task with `Project: <project>. Repo: <repo>. Date: <date>.` The plan root is the planner's configured directory (`agents/planner.json`, `{project}` expanded). Missions live in `<plan root>/<mission-slug>/`.
 
-Ask every question to the user with the `question` tool, never in prose: 2-5 options, the recommended one first with `(Recommended)` at the end of its label, each with a one-line description. The tool appends a final "type your own answer" option, so do not add one. For free-form input (a goal list edit, checkpoint lines), offer your proposal as the first option and let the user type their own. If the tool reports no interactive UI, ask in plain text.
+Ask every question to the user with the `question` tool, never in prose: 2-5 options, the recommended one first with `(Recommended)` at the end of its label, each with a one-line description. Set `multiSelect: true` when several answers can apply at once (which failure cases to cover, which goals to defer, which checks to run); the user then ticks checkboxes. The tool appends a final "type your own answer" option, so do not add one. For free-form input (a goal list edit, checkpoint lines), offer your proposal as the first option and let the user type their own. If the tool reports no interactive UI, ask in plain text.
 
 You plan exactly ONE goal per run. Do not plan tasks for other goals, and do not run the executor.
 

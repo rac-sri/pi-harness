@@ -93,7 +93,7 @@ repo-controlled prompts can run bash).
 - creds-guard: agents may only touch `<vault>/Agents/**`; the rest of the vault (personal notes) is unreadable to every agent; sessions whose cwd is inside the vault are exempt
 - Date rule: planner never guesses today's date — orchestrator passes `Date:` (from `date +%F`)
 
-- `extensions/question.ts` registers `question`: one question as a select list (`ctx.ui.select`), with a final "type your own answer" entry that opens a text input. `/plan` and the planning rule ask every interview, confirmation and checkpoint question through it. It is allowed in every mode and falls back to plain text when there is no UI. Subagents can't use it (not in any `tools:` list).
+- `extensions/question.ts` registers `question`: one question as a custom TUI list (`ctx.ui.custom`). Single questions use radio rows; `multiSelect: true` uses checkboxes (Space or 1-9 toggles, Enter submits, an empty submit is refused). The last row is always "type your own answer", which opens a text input and can be combined with ticked options. Outside the TUI (rpc/json/print) it tells the model to ask in plain text. `/plan` and the planning rule ask every interview, confirmation and checkpoint question through it. It is allowed in every mode and falls back to plain text when there is no UI. Subagents can't use it (not in any `tools:` list).
 
 ## Live progress and dispatch speed
 
