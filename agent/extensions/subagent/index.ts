@@ -114,7 +114,8 @@ function formatToolCall(
 			if (lines > 1) text += themeFg("dim", ` (${lines} lines)`);
 			return text;
 		}
-		case "edit": {
+		case "edit":
+		case "hashline_edit": {
 			const rawPath = (args.file_path || args.path || "...") as string;
 			return themeFg("muted", "edit ") + themeFg("accent", shortenPath(rawPath));
 		}
@@ -332,8 +333,11 @@ export async function runSingleAgent(
 	}
 	// Executor loads Lens alongside the guard/sandbox without unrelated plugins.
 	const lensTools = new Set(["debug", "lens_diagnostics", "symbol_search", "effective_config", "project_report", "module_report", "read_symbol", "read_enclosing", "pi_lens_activate_tools", "lsp_navigation", "ast_grep_search", "ast_grep_outline", "ast_grep_replace"]);
-	if (agent.name === "executor" && agent.tools?.some(tool => lensTools.has(tool)) && agent.tools.every(tool => builtInTools.has(tool) || lensTools.has(tool))) {
+	// hashline_edit (and its tagged read) come from an explicitly loaded extension.
+	const hashlineTools = new Set(["hashline_edit"]);
+	if (agent.name === "executor" && agent.tools?.some(tool => lensTools.has(tool)) && agent.tools.every(tool => builtInTools.has(tool) || lensTools.has(tool) || hashlineTools.has(tool))) {
 		args.push("--no-extensions", "-e", path.join(getAgentDir(), "extensions", "creds-guard.ts"), "-e", path.join(getAgentDir(), "extensions", "sandbox", "index.ts"), "-e", path.join(getAgentDir(), "npm", "node_modules", "pi-lens", "dist", "index.js"));
+		if (agent.tools.some(tool => hashlineTools.has(tool))) args.push("-e", path.join(getAgentDir(), "extensions", "hashline", "tool.ts"));
 	}
 	const inheritsDispatchConfig = !agent.model;
 	const model = agent.model ?? dispatchDefaults.model;
@@ -383,7 +387,7 @@ export async function runSingleAgent(
 	try {
 		runtime = loadRuntimeConfig();
 		if (!args.includes("--thinking") && !/:(off|minimal|low|medium|high|xhigh)$/.test(model ?? "") && runtime.thinking[agent.name]) args.push("--thinking", runtime.thinking[agent.name]);
-		if (agent.tools === undefined || agent.tools.some(t => ["write", "edit", "bash", "harness_check"].includes(t)) && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
+		if (agent.tools === undefined || agent.tools.some(t => ["write", "edit", "hashline_edit", "bash", "harness_check"].includes(t)) && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
 		emitUpdate(true);
 		const systemPrompt = agent.name === "planner" ? plannerPrompt(agent.systemPrompt, cwd ?? defaultCwd) : agent.systemPrompt;
 		if (systemPrompt.trim()) {
@@ -457,7 +461,7 @@ export async function runSingleAgent(
 				}
 				if (event.type === "tool_execution_start") {
 					if (event.toolCallId) toolArgs.set(event.toolCallId, event.args ?? {});
-					if (["write", "edit", "bash", "debug", "ast_grep_replace", "lsp_navigation"].includes(event.toolName)) {
+					if (["write", "edit", "hashline_edit", "bash", "debug", "ast_grep_replace", "lsp_navigation"].includes(event.toolName)) {
 						const activeRun = [...checkpointRuns.keys()].at(-1);
 						if (activeRun) checkpointRuns.set(activeRun, false);
 					}

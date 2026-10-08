@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isReadOnlyCommand, READ_ONLY_HINT } from "./lib/read-only.ts";
 
 export const VAULT_ROOT = "/Users/rachitsrivastava/Library/CloudStorage/ProtonDrive-privacyprophetHQ@proton.me-folder/Obs";
-const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
+const FILE_TOOLS = new Set(["read", "write", "edit", "hashline_edit", "grep", "find", "ls", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
 const RECURSIVE_TOOLS = new Set(["grep", "find", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "project_report"]);
 export const SECRET_PATHS = [".ssh", ".gnupg", ".aws", ".aws-sam", ".docker", ".npmrc", ".netrc", ".git-credentials", ".pypirc", ".pi/agent/auth.json", ".pi/agent/models-store.json", ".config/opencode", ".config/stripe", ".config/github-copilot", ".config/sops", ".cargo/credentials", ".cargo/credentials.toml", ".mongodb", "ns-owner.key", "Library/Keychains", ".emulator_console_auth_token"].map(p => path.join(os.homedir(), p));
 
@@ -17,7 +17,11 @@ function within(target: string, root: string): boolean {
 
 /** Resolve symlinks even for a new file by resolving its nearest existing parent. */
 export function canonicalPath(value: string, cwd: string): string {
-	const expanded = value === "~" ? os.homedir() : value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
+	// Mirror pi's tool path normalization (utils/paths.js normalizePath): built-in
+	// tools strip one leading "@" and map Unicode spaces before resolving, so the
+	// guard must match the path the tool will actually open.
+	const normalized = value.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
+	const expanded = normalized === "~" ? os.homedir() : normalized.startsWith("~/") ? path.join(os.homedir(), normalized.slice(2)) : normalized;
 	let existing = path.resolve(cwd, expanded);
 	const suffix: string[] = [];
 	while (true) {
@@ -74,7 +78,7 @@ export default function (pi: ExtensionAPI) {
 				const prefix = glob >= 0 ? raw.slice(0, glob) : raw;
 				const target = glob >= 0 ? (prefix.endsWith(path.sep) ? prefix : path.dirname(prefix)) || "." : raw;
 				if (recursive && raw.split(path.sep).some(part => part.startsWith(".env") && /[?*\[{]/.test(part))) return { block: true, reason: "Credential glob blocked by creds-guard." };
-				if (["write", "edit", "ast_grep_replace", "lsp_navigation"].includes(event.toolName) && within(canonicalPath(target, ctx.cwd), canonicalPath(path.join(getAgentDir(), "harness"), ctx.cwd))) return { block: true, reason: "Harness evidence is managed by harness_check; direct edits are blocked." };
+				if (["write", "edit", "hashline_edit", "ast_grep_replace", "lsp_navigation"].includes(event.toolName) && within(canonicalPath(target, ctx.cwd), canonicalPath(path.join(getAgentDir(), "harness"), ctx.cwd))) return { block: true, reason: "Harness evidence is managed by harness_check; direct edits are blocked." };
 				const reason = pathDenied(target, ctx.cwd, recursive);
 				if (reason) return { block: true, reason: `Blocked by creds-guard: ${reason}.` };
 			}

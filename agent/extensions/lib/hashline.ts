@@ -37,7 +37,7 @@ export function createHashlineStore(): HashlineStore { return { files: new Map()
 function digestOf(raw: string): string { return createHash("sha256").update(raw, "utf8").digest("hex"); }
 
 function parse(raw: string): Parsed {
-	const bom = raw.startsWith("﻿") ? "﻿" : "";
+	const bom = raw.startsWith("\uFEFF") ? "\uFEFF" : "";
 	const body = raw.slice(bom.length);
 	const finalNewline = body.endsWith("\n");
 	const segments = body === "" ? [] : (finalNewline ? body.slice(0, -1) : body).split("\n");
@@ -48,7 +48,8 @@ function parse(raw: string): Parsed {
 		if (crlf) crlfCount++;
 		return { text: crlf ? segment.slice(0, -1) : segment, crlf, served: false };
 	});
-	const crlfDefault = crlfCount * 2 > segments.length - (finalNewline ? 0 : 1);
+	const terminated = finalNewline ? segments.length : Math.max(0, segments.length - 1);
+	const crlfDefault = terminated > 0 && crlfCount * 2 > terminated;
 	for (const [index, line] of lines.entries()) if (index === lines.length - 1 && !finalNewline) line.crlf = crlfDefault;
 	return { bom, lines, finalNewline, crlfDefault };
 }
@@ -88,7 +89,7 @@ export function renderRead(store: HashlineStore, file: string, display: string, 
 	for (let number = start; number <= requestedEnd && rows.length < maxLines; number++) {
 		const line = parsed.lines[number - 1];
 		const full = line.text.length <= maxLineChars;
-		const row = `${number}:${full ? line.text : line.text.slice(0, maxLineChars) + " … [line truncated; not editable here]"}`;
+		const row = `${number}:${full ? line.text : line.text.slice(0, maxLineChars) + " ... [line truncated; not editable here]"}`;
 		if (rows.length > 0 && bytes + row.length + 1 > maxBytes) break;
 		rows.push(row); bytes += row.length + 1; end = number;
 		line.served = full;
@@ -201,10 +202,8 @@ export function applyEdits(store: HashlineStore, file: string, display: string, 
 	}
 	for (const edit of [...base].sort((a, b) => key(b) - key(a))) {
 		const rows = edit.op === "delete" ? [] : payload(edit.text).map(text => ({ text, crlf: current.crlfDefault, served: true }));
-		if (edit.op === "insert") {
-			if (edit.after === current.lines.length && edit.after > 0 && !current.finalNewline) current.finalNewline = true;
-			current.lines.splice(edit.after, 0, ...rows);
-		} else current.lines.splice(edit.start - 1, edit.end - edit.start + 1, ...rows);
+		if (edit.op === "insert") current.lines.splice(edit.after, 0, ...rows);
+		else current.lines.splice(edit.start - 1, edit.end - edit.start + 1, ...rows);
 	}
 	if (current.lines.length > 0 && snapshot.parsed.lines.length === 0) current.finalNewline = true;
 	const raw = serialize(current);
@@ -214,7 +213,7 @@ export function applyEdits(store: HashlineStore, file: string, display: string, 
 	const numbers = [...shown].sort((a, b) => a - b).slice(0, MAX_RESULT_LINES);
 	for (const n of numbers) current.lines[n - 1].served = true;
 	const next = remember(store, file, raw, current);
-	const lines = numbers.map((n, i) => (i > 0 && numbers[i - 1] !== n - 1 ? "…\n" : "") + `${n}:${current.lines[n - 1].text}`);
+	const lines = numbers.map((n, i) => (i > 0 && numbers[i - 1] !== n - 1 ? "...\n" : "") + `${n}:${current.lines[n - 1].text}`);
 	let text = `[${display}#${next.tag}]\nApplied ${edits.length} edit(s). Use #${next.tag} for further edits to this file.`;
 	if (recovered) text += `\nWarning: ${display} changed after #${tag} was read. The edited lines and ${CONTEXT} lines of context were unchanged and occur once, so the edit was shifted by ${offset} line(s). Check the result below.`;
 	if (shown.size > MAX_RESULT_LINES) text += `\n(Showing the first ${MAX_RESULT_LINES} changed/context lines; read the file for the rest.)`;

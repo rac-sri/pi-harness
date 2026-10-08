@@ -54,7 +54,7 @@ Interviews pass a `ledger` (e.g. `reshield/01`) and a `decides` id per question.
 
 1. **Capability scoping.** Each subagent gets an explicit `--tools` list. An invalid explicit list grants zero tools; an omitted one inherits Pi's defaults.
 2. **OS sandbox for bash.** `extensions/sandbox/` uses `@anthropic-ai/sandbox-runtime` (Seatbelt on macOS), configured in `extensions/sandbox.json`. Credential paths and the whole vault are denied to bash; agents reach `Agents/` through file tools. If the sandbox can't start, bash is blocked. Project settings can add denials or narrow allowlists but can't loosen the global policy.
-3. **Credentials guard.** `extensions/creds-guard.ts` blocks read, write, edit, grep, find, ls and bash on the same paths, covering the file tools Seatbelt can't see. It resolves targets against cwd, normalises `..`, and resolves existing symlinks and parents before matching. Recursive grep and find can't start above a protected path. Agents may only touch `<vault>/Agents/**`, except in sessions whose cwd is inside the vault.
+3. **Credentials guard.** `extensions/creds-guard.ts` blocks read, write, edit, hashline_edit, grep, find, ls and bash on the same paths, covering the file tools Seatbelt can't see. It applies pi's own path normalisation first (one leading `@` stripped, Unicode spaces mapped), resolves targets against cwd, normalises `..`, and resolves existing symlinks and parents before matching. Recursive grep and find can't start above a protected path. Agents may only touch `<vault>/Agents/**`, except in sessions whose cwd is inside the vault.
 4. **`.env` coverage.** The guard blocks `.env*` at any depth (examples allowed). Seatbelt's `.env` rule is relative to the process cwd, which covers the repo root because subagents start there. A nested `apps/x/.env` is protected by the guard only. `~/.env` is denied globally.
 5. **Escape hatches.** `pi --no-sandbox`, or `enabled: false` in the trusted global config. Editing the guard means editing `extensions/creds-guard.ts`, which Seatbelt write-protects.
 
@@ -72,7 +72,7 @@ Subagents ignore the mode switch (`PI_SUBAGENT_CHILD=1`). Scout and reviewer bas
 
 ## Dispatch and live progress
 
-- Children that only use built-in tools load just the guard, plus the sandbox when they need bash or verification. The executor also loads Lens; web and advisor plugins stay out. Children skip slash-prompt discovery, and `discuss` skips skill discovery.
+- Children that only use built-in tools load just the guard, plus the sandbox when they need bash or verification. The executor also loads Lens and `extensions/hashline/tool.ts`; web and advisor plugins stay out. Children skip slash-prompt discovery, and `discuss` skips skill discovery.
 - `agents/runtime.json` reloads on every dispatch and sets per-role thinking, a deadline, max turns, max output tokens and the UI update interval. A thinking suffix in `models.json` wins. Turn and token limits are checked at the end of each assistant message, so they are soft. A deadline kills the process group, escalating after five seconds.
 - Subagent panels stream thinking (when the provider exposes it), text, tool calls and elapsed time. Ctrl+O expands them. Completed results keep a bounded thinking excerpt.
 - Speed is generation speed: output tokens after the first, divided by the time from the first streamed delta to the latest usage report. Queueing and tool time are excluded. Most providers report usage only at the end, so a placeholder shows until then.
@@ -85,6 +85,15 @@ The executor can use Lens diagnostics, symbol reads, LSP navigation, AST search 
 `debug` runs one LLDB batch against a binary inside the workspace, with optional `args`, `file:line` breakpoints, `commands` and `timeoutSeconds` (default 60, max 300). Custom commands replace the default sequence, init files are disabled, and nothing persists between batches. There is no attach to running processes.
 
 On macOS, Seatbelt stops LLDB from controlling processes, so `debug` needs `pi --debug-unsandboxed`. That lets only debugger calls leave the sandbox, the flag is inherited by executor children, and bash stays sandboxed. Unsandboxed LLDB and its target get your full filesystem and network access, and the credential guard doesn't apply to them. Without the flag, `debug` fails with instructions. Linux stays sandboxed unless you opt out. `debug` is blocked in discuss, plan and read-only subagents.
+
+## Executor edits: `hashline_edit`
+
+The executor has no native `edit`. `extensions/hashline/tool.ts` replaces its `read` with one that prints `N:content` lines under a `[path#TAG]` header, where TAG names the exact file content, and adds `hashline_edit` (replace, delete or insert by line number, citing the tag). The design follows oh-my-pi's hashline v2; the logic lives in `extensions/lib/hashline.ts`.
+
+- An edit applies directly only when the file's full SHA-256 still matches the tagged snapshot. Each result returns the new tag, so edits chain without re-reading.
+- If the file changed, the edit is shifted only when the edited lines plus 2 lines of context each side occur exactly once, unchanged, and every edit in the batch shifts by the same amount. The result then carries a warning. Anything else fails with `E_STALE`.
+- Edits must target lines served in full under that tag (`E_UNSERVED`); truncated long lines can't be edited this way. Overlaps, out-of-range lines and payloads copied with `N:` prefixes are rejected before writing. BOM, CRLF and a missing final newline are preserved.
+- Tags live in memory for one executor process. The file has no `index.ts`, so the main session never loads it; the dispatcher adds it with `-e` when the executor's tools include `hashline_edit`. Lens doesn't see `hashline_edit` as an edit, so its read-guard and deferred formatting don't act on these writes. `hashline_edit` invalidates completion like other mutating tools.
 
 ## Advisor (pi-advisor-flow)
 
@@ -102,7 +111,7 @@ On macOS, Seatbelt stops LLDB from controlling processes, so `debug` needs `pi -
 
 See the README for the test list. Run them from `~/.pi` in a normal shell with Node 22.19 or newer. Inside a sandboxed Pi shell, `harness.test.mjs` fails with `EPERM` on `auth.json`; the other checks run anywhere. Restart Pi after changing extensions.
 
-`tests/domain-eval.mjs` has broken and reference versions of four bugs: lost-ack retry, duplicate apply, nonce reuse after restart, and malformed-signature rejection. `--agent` runs the executor live, `--baseline` adds a plain agent on the same model, `--hidden-tests` withholds the tests from the agents, and `--case <id>` picks one. Reports go to `agent/harness/evals/`. The first full run (2026-10-08, hidden tests) had both arms solve 8/8 with no edits to correct code, and the harness cost about 1.5× in time and money. The cases are too easy to tell the arms apart.
+`tests/domain-eval.mjs` has broken and reference versions of four bugs: lost-ack retry, duplicate apply, nonce reuse after restart, and malformed-signature rejection. `--agent` runs the executor live, `--baseline` adds a plain agent on the same model, `--hidden-tests` withholds the tests from the agents, and `--case <id>` picks one. Reports go to `agent/harness/evals/`. The first full run (2026-10-08, hidden tests) had both arms solve 8/8 with no edits to correct code, and the harness cost about 1.5× in time and money. The cases are too easy to tell the arms apart. Since then the harness arm edits with `hashline_edit` while the baseline keeps native `edit`, so arm differences now include the edit format.
 
 ## Known environment issues
 

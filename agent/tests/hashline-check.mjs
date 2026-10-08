@@ -46,10 +46,12 @@ const source = "a\nb\nc\nd\ne\n";
 
 // Line endings, BOM and missing final newline are preserved.
 {
-  const crlf = "﻿a\r\nb\r\nc";
+  const crlf = "\uFEFFa\r\nb\r\nc";
   const { store, tag, read } = fresh(crlf);
-  check(read.text.includes("1:a\n2:b\n3:c") && !read.text.includes("\r") && !read.text.includes("﻿"), "read hides CR and BOM");
-  check(applyEdits(store, FILE, "src/sig.ts", crlf, tag, [{ op: "replace", start: 2, end: 2, text: "B" }]).raw === "﻿a\r\nB\r\nc", "CRLF, BOM and no final newline preserved");
+  check(read.text.includes("1:a\n2:b\n3:c") && !read.text.includes("\r") && !read.text.includes("\uFEFF"), "read hides CR and BOM");
+  check(applyEdits(store, FILE, "src/sig.ts", crlf, tag, [{ op: "replace", start: 2, end: 2, text: "B" }]).raw === "\uFEFFa\r\nB\r\nc", "CRLF, BOM and no final newline preserved");
+  const open = fresh("a\nb");
+  check(applyEdits(open.store, FILE, "src/sig.ts", "a\nb", open.tag, [{ op: "insert", after: 2, text: "c" }]).raw === "a\nb\nc", "appending keeps a missing final newline missing");
 }
 
 // Tags are bound to the file and the session.
@@ -103,6 +105,30 @@ const source = "a\nb\nc\nd\ne\n";
   bad([{ op: "replace", start: 2, end: 3, text: "2:B\n3:C" }], "E_PREFIXED", "payload copied with line-number prefixes rejected");
   check(applyEdits(store, FILE, "src/sig.ts", source, tag, [{ op: "replace", start: 2, end: 2, text: "8080:80" }]).raw === "a\n8080:80\nc\nd\ne\n", "colon-number payload far from the range is allowed");
   check(applyEdits(store, FILE, "src/sig.ts", source, tag, [{ op: "insert", after: 1, text: "b0\n" }]).raw === "a\nb0\nb\nc\nd\ne\n", "one trailing newline in payload is not an extra line");
+}
+
+// Tool wrapper: real files, registered names, fail-closed writes.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tools = new Map();
+  (await jiti.import(path.join(root, "extensions/hashline/tool.ts"))).default({ registerTool: tool => tools.set(tool.name, tool) });
+  check(tools.has("read") && tools.has("hashline_edit") && !tools.has("edit"), "registers read and hashline_edit only");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-hashline-"));
+  try {
+    const target = path.join(dir, "mod.rs");
+    fs.writeFileSync(target, "fn a() {}\nfn b() {}\n");
+    const ctx = { cwd: dir };
+    const text = result => result.content.map(part => part.text).join("");
+    const read = text(await tools.get("read").execute("r1", { path: "mod.rs" }, undefined, undefined, ctx));
+    const tag = tagOf(read);
+    const edited = await tools.get("hashline_edit").execute("e1", { path: "mod.rs", tag, edits: [{ op: "replace", start: 2, end: 2, text: "fn b() { todo!() }" }] }, undefined, undefined, ctx);
+    check(fs.readFileSync(target, "utf8") === "fn a() {}\nfn b() { todo!() }\n" && typeof edited.details?.diff === "string", "edit writes file and reports a diff");
+    fs.writeFileSync(target, "fn a() {}\nfn b() { changed }\n");
+    await assert.rejects(tools.get("hashline_edit").execute("e2", { path: "mod.rs", tag: tagOf(text(edited)), edits: [{ op: "replace", start: 2, end: 2, text: "x" }] }, undefined, undefined, ctx), /E_STALE/); checks++;
+    check(fs.readFileSync(target, "utf8") === "fn a() {}\nfn b() { changed }\n", "rejected edit leaves the file untouched");
+    await assert.rejects(tools.get("hashline_edit").execute("e3", { path: "missing.rs", tag, edits: [{ op: "delete", start: 1, end: 1 }] }, undefined, undefined, ctx), /E_UNKNOWN_TAG|not found|ENOENT/); checks++;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 console.log(`Passed ${checks} hashline checks.`);

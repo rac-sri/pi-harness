@@ -20,6 +20,7 @@ It turns Pi into a small team of single-purpose agents run by one orchestrator (
 | `question` tool | Every interview question appears as a keyboard list: radio buttons for one answer, checkboxes (`multiSelect`) when several apply. The recommended answer comes first, and the last row is always "type your own answer". Available in all modes. |
 | Advisor | `pi-advisor-flow` pairs the main model with a stronger reviewer that steps in after repeated failures. |
 | Code intelligence and debugging | The executor has Lens (diagnostics, symbols, LSP, AST search/replace) and a batch LLDB `debug` tool. |
+| Tagged line edits | The executor edits through `hashline_edit`: `read` tags each file's exact content, and an edit applies only if the cited lines are unchanged, so it can't silently overwrite a file that moved underneath it. |
 
 ## How it fits together
 
@@ -166,7 +167,7 @@ Defined in `agent/agents/*.md`. The frontmatter is the capability policy.
 |---|---|---|
 | `scout` | read, grep, find, ls, read-only bash | Finds relevant code and returns compressed context |
 | `planner` | read, grep, find, ls, write | Writes mission and goal files; never touches code |
-| `executor` | read, bash, edit, write, grep, find, ls, `harness_check`, `debug`, Lens tools | Implements plans verbatim with recorded verification |
+| `executor` | tagged read, `hashline_edit`, write, bash, grep, find, ls, `harness_check`, `debug`, Lens tools | Implements plans verbatim with recorded verification |
 | `reviewer` | read, grep, find, ls, read-only bash, `harness_check` (status) | Adversarial review: races, nonce reuse, hot-path cost, unsupported checkmarks |
 | `discuss` | none | Pure reasoning. No project context, runs in a throwaway temp directory |
 
@@ -187,7 +188,7 @@ fixed checks                     command, records        current files; checkpoi
 ```
 
 - Fixed up front. The contract and the `{id, command, property}` checks can't change once defined. A changed check means a new run.
-- Bound to the files. Evidence records HEAD, tree, a fingerprint of the source files and an output hash. Any later edit, write, bash call, debug session or LSP operation invalidates completion, so the checks must be rerun.
+- Bound to the files. Evidence records HEAD, tree, a fingerprint of the source files and an output hash. Any later edit (including `hashline_edit`), write, bash call, debug session or LSP operation invalidates completion, so the checks must be rerun.
 - Enforced by the dispatcher. An executor that finishes without a successful `complete` or `checkpoint` after its last change is reported as rejected.
 - Scoped commits. `checkpoint` commits only the files it names. It refuses if anything is already staged or other files have changed, and it never resets or discards work.
 - Stored out of reach. Run state lives in `~/.pi/agent/harness/runs/<repo-hash>/<run>/`, which agents can't write to directly.
@@ -250,8 +251,9 @@ Restart Pi or run `/reload` after changing extensions or `settings.json`.
     │   ├── creds-guard.ts    # tool-level credentials and vault guard
     │   ├── compact-read.ts   # compact display for read results
     │   ├── question.ts       # radio/checkbox questions with a type-your-own row
+    │   ├── hashline/         # executor-only tagged read + hashline_edit (loaded by the dispatcher)
     │   ├── advisor-patch-guard.ts
-    │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed
+    │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed, hashline
     ├── patches/              # local fix for pi-advisor-flow's missing session id
     ├── npm/                  # Pi packages: pi-advisor-flow, pi-lens, pi-web-access
     ├── skills/ethskills/     # git submodule (excluded from prompts by default)
@@ -266,7 +268,7 @@ Not tracked: `auth.json`, `install/`, `sessions/`, `harness/` (run state), cache
 Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harness suite stops with `EPERM` on `auth.json`.
 
 ```sh
-for t in harness.test modes-check verification-check subagent-progress-check \
+for t in harness.test modes-check verification-check subagent-progress-check hashline-check \
          debugger-check advisor-config-check advisor-patch-guard \
          advisor-session-header typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
@@ -279,6 +281,7 @@ done
 | `modes-check.mjs` | Mode switching, tool gates, prompt-section stability, keybindings |
 | `verification-check.mjs` | Evidence freshness, failure evidence, scoped checkpoint commits, writer lock |
 | `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection |
+| `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |
 | `advisor-*.mjs` | Advisor config validation and the session-id patch |
 | `typecheck.mjs` | Strict TypeScript over all extensions. Prints `SKIPPED` if `tsc` isn't installed. |

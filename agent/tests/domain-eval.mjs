@@ -57,8 +57,8 @@ async function agentRun(repo, request, arm, hidden) {
   // Both arms get the same model, sandbox, guard and task; only the harness prompt and harness_check differ.
   const scope = hidden ? "No tests are provided: write your own checks in new test files, run them, and modify source.mjs only if they show it is wrong." : "Modify only source.mjs if needed. Tests are in verify.mjs.";
   const verify = arm === "harness" ? (hidden ? " Register your own test files as harness_check checks; define an immutable contract before changes. End with harness_check complete." : " Verify with node verify.mjs using harness_check; define an immutable contract before changes. End with harness_check complete.") : " Run the tests before finishing.";
-  const args = ["--mode", "json", "-p", "--no-session", "--no-prompt-templates", "--no-extensions", "-e", path.join(root, "extensions/creds-guard.ts"), "-e", path.join(root, "extensions/sandbox/index.ts"), "--model", model.executor ?? model.default, "--thinking", "medium",
-    "--tools", arm === "harness" ? "read,write,edit,bash,grep,find,ls,harness_check" : "read,write,edit,bash,grep,find,ls", ...(arm === "harness" ? ["--append-system-prompt", promptFile] : []),
+  const args = ["--mode", "json", "-p", "--no-session", "--no-prompt-templates", "--no-extensions", "-e", path.join(root, "extensions/creds-guard.ts"), "-e", path.join(root, "extensions/sandbox/index.ts"), ...(arm === "harness" ? ["-e", path.join(root, "extensions/hashline/tool.ts")] : []), "--model", model.executor ?? model.default, "--thinking", "medium",
+    "--tools", arm === "harness" ? "read,write,hashline_edit,bash,grep,find,ls,harness_check" : "read,write,edit,bash,grep,find,ls", ...(arm === "harness" ? ["--append-system-prompt", promptFile] : []),
     `Task: ${request}\nRepo: ${repo}. ${scope}${verify} Do not commit. Correct code should remain unchanged. This is a bounded engineering evaluation, not a production cryptographic design.`];
   const started = Date.now();
   return await new Promise(resolve => {

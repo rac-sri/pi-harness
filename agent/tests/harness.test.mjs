@@ -73,6 +73,9 @@ if (process.argv.includes("--mode")) {
 	const guardHooks = new Map();
 	guard.default({ on: (name, handler) => guardHooks.set(name, handler) });
 	check((await guardHooks.get("tool_call")({ toolName: "write", input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root })).block, "direct evidence edits blocked");
+	check((await guardHooks.get("tool_call")({ toolName: "hashline_edit", input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root }))?.block, "hashline edits cannot touch evidence");
+	check((await guardHooks.get("tool_call")({ toolName: "hashline_edit", input: { path: "~/.ssh/config" } }, { cwd: root }))?.block, "hashline edits respect credential boundaries");
+	for (const p of ["@~/.ssh/id_ed25519", "@" + path.join(root, "auth.json")]) check((await guardHooks.get("tool_call")({ toolName: "read", input: { path: p } }, { cwd: root }))?.block, `@-prefixed path ${p} is resolved like pi before matching`);
 	check((await guardHooks.get("tool_call")({ toolName: "read_symbol", input: { path: path.join(root, "auth.json") } }, { cwd: root })).block, "code-intelligence reads respect credential boundaries");
 	check((await guardHooks.get("tool_call")({ toolName: "ast_grep_search", input: { paths: [path.join(root, "auth.json")] } }, { cwd: root })).block, "code-intelligence path arrays respect credential boundaries");
 	check((await guardHooks.get("tool_call")({ toolName: "ast_grep_search", input: { paths: [path.join(root, "../*")] } }, { cwd: root })).block, "search glob expansion cannot include credentials");
@@ -149,6 +152,10 @@ if (process.argv.includes("--mode")) {
 	check(lensArgs.includes(path.join(root, "extensions/sandbox/index.ts")), "executor loads sandbox and debugger");
 	check(lensArgs[lensArgs.indexOf("--tools") + 1].includes("debug"), "executor gets debugger capability");
 	check(!lensArgs.some(arg => arg.includes("pi-advisor") || arg.includes("pi-web-access")), "executor excludes unrelated plugins");
+	const realExecutor = discoverAgents(root, "user").agents.find(a => a.name === "executor");
+	check(realExecutor.tools.includes("hashline_edit") && !realExecutor.tools.includes("edit"), "executor edits through hashline_edit only");
+	const hashlineArgs = JSON.parse((await runSingleAgent(root, {}, [realExecutor], "executor", "RETURN_ARGS", undefined, undefined, undefined, undefined, results => ({ results }))).messages[0].content[0].text);
+	check(hashlineArgs.includes("--no-extensions") && hashlineArgs.includes(path.join(root, "extensions/hashline/tool.ts")) && hashlineArgs.includes(path.join(root, "npm/node_modules/pi-lens/dist/index.js")), "executor loads hashline tools with Lens and no unrelated plugins");
 
 	let subagentTool;
 	subagent.default({ registerTool: tool => { subagentTool = tool; } });
@@ -177,5 +184,7 @@ if (process.argv.includes("--mode")) {
 	const loader = await import(path.join(modules, "@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"));
 	const loaded = await loader.loadExtensions(["creds-guard.ts", "compact-read.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts", "question.ts"].map(p => path.join(root, "extensions", p)), root);
 	assert.deepEqual(loaded.errors, []); checks++;
-	console.log(`Passed ${checks} harness regression checks; all seven extensions load.`);
+	const executorLoaded = await loader.loadExtensions(["creds-guard.ts", "sandbox/index.ts", "hashline/tool.ts"].map(p => path.join(root, "extensions", p)), root);
+	assert.deepEqual(executorLoaded.errors, []); checks++;
+	console.log(`Passed ${checks} harness regression checks; all seven main-session extensions and the executor hashline set load.`);
 }
