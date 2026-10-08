@@ -28,7 +28,7 @@ if (process.argv.includes("--mode")) {
     }
     if (["debug", "ast_grep_replace", "lsp_navigation"].includes(task)) emit({ type: "tool_execution_start", toolName: task, args: {} });
     if (task === "STALE") emit({ type: "tool_execution_start", toolName: "bash", args: { command: "touch source" } });
-    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Provider reasoning completed" }, { type: "text", text: "Done" }], usage: { output: task === "TOKENS" ? 50 : 1 }, stopReason: "stop" } });
+    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Provider reasoning completed" }, { type: "text", text: "Done" }], usage: { output: task === "TOKENS" ? 50 : 20 }, stopReason: "stop" } });
   }
 } else {
   const subagent = await jiti.import(path.join(root, "extensions/subagent/index.ts"));

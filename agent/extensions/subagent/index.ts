@@ -446,6 +446,7 @@ export async function runSingleAgent(
 				}
 
 				if (event.type === "message_update" && event.message?.role === "assistant") {
+					if (event.assistantMessageEvent?.type?.endsWith("_delta")) speed.firstToken();
 					const rate = speed.update(event.message.usage?.output);
 					if (rate !== undefined) currentResult.usage.outputRate = rate;
 					const parts = event.message.content ?? [];
