@@ -61,6 +61,11 @@ check(!hooks.has("context"), "no context hook rewrites history (prompt cache)");
 
 await commands.get("mode").handler("plan", ctx);
 check(statuses.get("harness-mode") === "MODE: PLAN · Tab", "mode command updates the footer");
+const planPrompt = promptEvent(); await hooks.get("before_agent_start")(planPrompt);
+check(planPrompt.systemPromptOptions.sections.harness_mode.includes("prompts/plan.md") && planPrompt.systemPromptOptions.sections.harness_mode.includes("one goal at a time"), "plan mode routes implementation plans to the mission/goal planner");
+check(planPrompt.systemPromptOptions.sections.harness_mode.includes("Never say you will start work this mode cannot do"), "plan mode does not promise work it cannot do");
+const globBlock = await call("bash", { command: "rg -n reshield ../orchestrator/test* 2>/dev/null" });
+check(globBlock.block && globBlock.reason.includes("globs") && globBlock.reason.includes("2>/dev/null"), "plan block reason explains the read-only rules");
 check(active.includes("bash") && active.includes("read") && !active.includes("edit") && !active.includes("write"), "plan keeps read+bash, drops edit/write");
 for (const tool of ["ast_grep_replace", "lens_diagnostic_mark", "pi_lens_activate_tools"]) {
   check(!active.includes(tool), `plan removes ${tool}`);
@@ -75,6 +80,8 @@ for (const operation of ["rename", "rename_file", "executeCommand", "codeAction"
 check((await call("subagent", { agent: "executor" })).block === true, "plan blocks executor");
 await commands.get("mode").handler("execute", ctx);
 check(active.length === ALL.length, "execute restores the full tool set");
+const execPrompt = promptEvent(); await hooks.get("before_agent_start")(execPrompt);
+check(execPrompt.systemPromptOptions.sections.harness_mode.includes("prompts/plan.md"), "execute mode also routes implementation plans to the planner");
 for (const tool of ["ast_grep_replace", "lens_diagnostic_mark", "pi_lens_activate_tools"]) {
   check((await call(tool, { apply: true })) === undefined, `execute allows ${tool}`);
 }

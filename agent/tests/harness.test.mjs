@@ -81,6 +81,8 @@ if (process.argv.includes("--mode")) {
 	try {
 		check((await guardHooks.get("tool_call")({ toolName: "harness_check", input: { action: "verify" } }, { cwd: root })).block, "read-only reviewer cannot execute verification");
 		check((await guardHooks.get("tool_call")({ toolName: "harness_check", input: { action: "status" } }, { cwd: root })) === undefined, "read-only reviewer can inspect evidence");
+		const scoutBlock = await guardHooks.get("tool_call")({ toolName: "bash", input: { command: "ls src/*" } }, { cwd: root });
+		check(scoutBlock?.block && scoutBlock.reason.includes("globs"), "read-only subagent block reason explains the shell rules");
 	} finally { if (previousReadOnly === undefined) delete process.env.PI_SUBAGENT_READ_ONLY; else process.env.PI_SUBAGENT_READ_ONLY = previousReadOnly; }
 	const hooks = new Map(); const commands = new Map();
 	let active = ["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "web_search"];

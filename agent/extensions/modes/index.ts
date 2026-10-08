@@ -10,7 +10,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { isReadOnlyCommand } from "../lib/read-only.ts";
+import { isReadOnlyCommand, READ_ONLY_HINT } from "../lib/read-only.ts";
 import { TokenSpeed } from "../lib/token-speed.ts";
 
 type Mode = "discuss" | "plan" | "execute";
@@ -28,6 +28,9 @@ const SCOPE_RULES = `- Do exactly what the user asked, at the size they asked fo
 - Re-read the user's latest message before each action and check that the action serves it.
 - If a subagent or advisor call fails (429/402/quota/timeout), do not retry or route around it: do the work directly if small, otherwise tell the user what failed and stop.`;
 
+// Implementation plans always go through the mission/goal planner, whether or not the user typed /plan.
+const PLANNING_RULE = `- When the user asks for an implementation plan ("make the plan", "write the steps"), follow the mission/goal workflow in ~/.pi/agent/prompts/plan.md instead of writing a full plan inline: propose a mission slug and its ordered goal list (one line per goal), get it confirmed, then interview the user on the first unplanned goal only with the grill-me skill, then dispatch the planner as that file describes. Never write detailed steps for more than one goal at a time.`;
+
 const DISCUSS_MODE_INSTRUCTIONS = `${CONTEXT_TAG.discuss}
 You are in DISCUSS mode: read the working tree and reason about it; you cannot run commands or change files.
 - Ground claims about this repo in files you read and cite path:line.
@@ -36,14 +39,16 @@ ${SCOPE_RULES}`;
 
 const PLAN_MODE_INSTRUCTIONS = `${CONTEXT_TAG.plan}
 You are in PLAN mode: read-only (edit/write disabled; bash limited to read-only commands; executor subagent blocked).
-- Answer planning requests inline in the chat by default. Dispatch the scout/planner subagents or write a persisted plan file only when the user asks for one or runs /plan.
-- When the user approves a plan, tell them to switch with /mode execute.
+- Answer questions and analysis inline in the chat. A request to build something that takes more than one step is a request for an implementation plan.
+${PLANNING_RULE}
+- Never say you will start work this mode cannot do. When the user wants changes made, tell them to switch with /mode execute and stop.
 ${SCOPE_RULES}`;
 
 const EXECUTE_MODE_INSTRUCTIONS = `${CONTEXT_TAG.execute}
 You are in EXECUTE mode: full tool access.
 - Do the work directly with read/edit/write/bash, then run the relevant build or tests and report the results.
 - Use subagents, harness_check contracts, plan files, and the advisor only when the user invokes /implement, /build-and-review, or /plan, or asks for them explicitly.
+${PLANNING_RULE}
 ${SCOPE_RULES}`;
 
 // ---------------------------------------------------------------------------
@@ -149,7 +154,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (mode === "plan") {
 			if (event.toolName === "bash" && !isReadOnlyCommand(String(event.input.command ?? ""))) {
-				return { block: true, reason: `PLAN mode: only read-only commands allowed. Blocked: ${String(event.input.command ?? "").slice(0, 80)}` };
+				return { block: true, reason: `PLAN mode: only read-only commands allowed. Blocked: ${String(event.input.command ?? "").slice(0, 80)}. ${READ_ONLY_HINT}` };
 			}
 		}
 

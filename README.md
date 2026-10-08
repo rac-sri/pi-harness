@@ -138,6 +138,8 @@ The planner is built to keep a human in the loop and keep code churn low. It nev
 
 Goal status in `mission.md` moves `pending → planning → planned → executing → done`.
 
+You don't have to type `/plan`. Asking for an implementation plan in plan or execute mode ("make the plan", "write the steps") starts the same flow.
+
 **`/plan payments-v1`, step by step**
 
 1. **Mission.** For a new mission, agree the ordered list of goals (one line each). For an existing one, pick the next `pending` goal.

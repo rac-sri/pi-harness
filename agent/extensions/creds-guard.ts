@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { isReadOnlyCommand } from "./lib/read-only.ts";
+import { isReadOnlyCommand, READ_ONLY_HINT } from "./lib/read-only.ts";
 
 export const VAULT_ROOT = "/Users/rachitsrivastava/Library/CloudStorage/ProtonDrive-privacyprophetHQ@proton.me-folder/Obs";
 const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
@@ -54,7 +54,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (event.toolName === "bash") {
 			const command = String(input.command ?? "");
-			if (process.env.PI_SUBAGENT_READ_ONLY === "1" && !isReadOnlyCommand(command)) return { block: true, reason: "Read-only subagent: command is outside the permitted shell subset." };
+			if (process.env.PI_SUBAGENT_READ_ONLY === "1" && !isReadOnlyCommand(command)) return { block: true, reason: `Read-only subagent: command is outside the permitted shell subset. ${READ_ONLY_HINT}` };
 			// Bash never accesses the vault; planner/executor use canonicalized file tools.
 			// The OS denyRead additionally blocks indirect/obfuscated shell access.
 			if (command.includes("ProtonDrive") || command.includes(VAULT_ROOT)) return { block: true, reason: "Use file tools for vault access; bash vault access is disabled." };

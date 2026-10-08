@@ -28,6 +28,9 @@ function safeSegment(words: string[]): boolean {
 	return true;
 }
 
+/** Shown when a command is blocked, so the model can retry correctly on the first attempt. */
+export const READ_ONLY_HINT = "Allowed: ls cat head tail grep rg find stat wc du pwd echo sort uniq cut tr date, and git status/log/diff/show/blame/ls-files/rev-parse (log/diff/show/blame need --no-ext-diff --no-textconv), joined by |, && or ;. Not allowed: globs like dir/test* (use rg -g 'test*' or find -name), redirects including 2>/dev/null, $, backticks, (), {}, [], < and >. Retry without them.";
+
 /** Conservative shell subset: no expansions, redirects, substitutions or scripts. */
 export function isReadOnlyCommand(command: string): boolean {
 	if (!command.trim() || /[$`\\\n\r<>()[\]{}]/.test(command)) return false;
