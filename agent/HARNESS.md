@@ -96,7 +96,7 @@ repo-controlled prompts can run bash).
 ## Live progress and dispatch speed
 
 - `extensions/compact-read.ts` keeps native read execution and replaces its display with a muted `READ` path/range and a short line-count summary. Text contents stay hidden even in expanded results; the agent still receives the native content. Read errors remain visible. Subagent read activity uses the same neutral labels. Native image previews still follow Pi's image-display setting.
-- Subagents stream provider thinking (when exposed), response text, tool activity, and elapsed time while running. The collapsed view shows a short tail; Ctrl+O expands it. Expanded completed results retain a bounded provider-thinking excerpt, separate from final output. UI updates are throttled and a heartbeat keeps elapsed time visible during quiet waits. The footer shows main-response speed; child panels show the latest child-response speed. Rates use provider-reported output tokens divided by message-start-to-end time, including provider wait and reasoning time but excluding tool execution. Most providers report usage only at completion, so streaming shows a placeholder until counts arrive.
+- Subagents stream provider thinking (when exposed), response text, tool activity, and elapsed time while running. The collapsed view shows a short tail; Ctrl+O expands it. Expanded completed results retain a bounded provider-thinking excerpt, separate from final output. UI updates are throttled and a heartbeat keeps elapsed time visible during quiet waits. The footer shows main-response speed; child panels show the latest child-response speed. Rates are generation speed: provider-reported output tokens after the first, divided by the time from the first streamed delta (text, thinking or tool call) to the latest usage report. Provider queueing before the first token is excluded, as is tool execution. Both the footer and child panels mark the first token the same way. Most providers report usage only at completion, so streaming shows a placeholder until counts arrive.
 - `agents/runtime.json` reloads on each dispatch. It configures role thinking levels, deadline seconds, maximum completed turns, total reported output tokens, and the update interval. Explicit thinking suffixes in models.json take precedence. Output/turn limits are evaluated at completed assistant messages, so they are soft bounds; deadlines terminate the process group, escalating after five seconds.
 - Small tasks skip unnecessary scout/planner launches; sensitive changes retain planning and independent review. Built-in-only children load only the credential guard plus the sandbox when shell/verification tools are needed; children with custom extension tools retain normal extension discovery. Children skip slash-prompt discovery, and the tool-less discuss role skips skill discovery. Model/provider latency remains outside the harness's control; end-to-end model latency remains unmeasured. In a local three-run extension-loading comparison, median initialization fell from 562 ms (all existing extensions/plugins) to 452 ms (guard + sandbox); this excludes provider calls, full process startup, and session-start hooks.
 
@@ -114,7 +114,7 @@ repo-controlled prompts can run bash).
 
 ## Regression checks and domain evaluations
 
-Run `node agent/tests/typecheck.mjs` (requires the installed TypeScript compiler), `node agent/tests/harness.test.mjs`, `node agent/tests/verification-check.mjs`, `node agent/tests/subagent-progress-check.mjs`, and `node agent/tests/domain-eval.mjs`. The additional checks exercise source freshness, failure evidence, scoped staging, output integrity, live rendering, dispatch limits, and executor completion rejection.
+Run `node agent/tests/typecheck.mjs` (prints SKIPPED when `tsc` is not on PATH; install with `npm i -g typescript`), `node agent/tests/harness.test.mjs`, `node agent/tests/verification-check.mjs`, `node agent/tests/subagent-progress-check.mjs`, and `node agent/tests/domain-eval.mjs`. The additional checks exercise source freshness, failure evidence, scoped staging, output integrity, live rendering, dispatch limits, and executor completion rejection.
 
 `domain-eval.mjs` distinguishes deliberately broken and reference implementations of lost acknowledgement recovery, duplicate application, nonce reuse after restart, and malformed-signature rejection. `--agent` runs the configured executor against broken/clean pairs and records independent test results, unnecessary clean-code edits, evidence completion, elapsed time, output tokens, and reported cost under `agent/harness/evals/`; `--case <id>` selects a pair. Live evaluation incurs provider usage and was not run as part of offline validation. These bounded fixtures measure a few engineering behaviors, not protocol security or full distributed correctness.
 
@@ -136,7 +136,7 @@ Run `node agent/tests/typecheck.mjs` (requires the installed TypeScript compiler
   - **plan**: read-only; bash allowlisted to read-only commands; executor blocked; plans are inline unless the user asks for a persisted one or runs `/plan`
   - **execute**: full tools; work is done directly. Subagents, `harness_check` contracts, plan files and the advisor are used only via `/implement`, `/build-and-review`, `/plan` or an explicit request.
 - Subagent children are exempt from the main mode switch (`PI_SUBAGENT_CHILD=1`), but scout/reviewer bash calls use the shared read-only policy (`PI_SUBAGENT_READ_ONLY=1`, inherited by descendants). Restricted main modes only dispatch personal agents, preventing project definitions from overriding allowed roles.
-- Regression suite: `node agent/tests/harness.test.mjs` from `~/.pi` using Node >=22.19.0 (Pi 1.0.1's runtime requirement). Tests cover command policy, canonical paths, mode injection/gates, zero-tool dispatch, cancellation escalation, sandbox policy, and extension loading. Restart Pi sessions after changing extensions.
+- Regression suite: `node agent/tests/harness.test.mjs` from `~/.pi` using Node >=22.19.0 (Pi 1.0.3's `engines` requirement; the managed version is in `agent/install/current-version`). Tests cover command policy, canonical paths, mode injection/gates, zero-tool dispatch, cancellation escalation, sandbox policy, and extension loading. Restart Pi sessions after changing extensions.
   - The full suite aborts inside a sandboxed Pi shell (`EPERM` lstat on `agent/auth.json` during the creds-guard symlink check). These slices run safely from any shell: `agent/tests/modes-check.mjs` (mode activation/gates/injection), `agent/tests/advisor-config-check.mjs` (advisor config), `agent/tests/advisor-session-header.mjs` (Advisor session-id patch), `agent/tests/advisor-patch-guard.mjs` (patch self-healing guard).
 
 ## Advisor model (pi-advisor-flow)
@@ -157,11 +157,11 @@ Executor = the session default; Advisor = `gpt-6-astra`. Plan and completion gat
   Proven by `node agent/tests/advisor-session-header.mjs` (8 checks: the id reaches `streamSimple` *and* `stream`, `withOpenCodeSessionHeader` yields the header only when it is present, the patched bundle loads with zero extension-loader errors, script output is byte-identical to the installed files) and `node agent/tests/advisor-patch-guard.mjs` (7 checks on a pristine `pi-advisor-flow@0.11.1` fixture: re-applies when unpatched, byte-identical when already patched, silent no-op when the plugin is absent). Upstream report still owed: https://github.com/philipbrembeck/pi-advisor
 - No `advisorFallbackModel` on purpose: a fallback would mask header/auth/config failures instead of surfacing them.
 
-## Known env issue
+## Known env issues
 
-`amazon-bedrock` env credentials (STS) are currently invalid
-(`UnrecognizedClientException`). `opencode-go` and `google` providers are ready.
-Refresh the AWS creds or select a working model before interactive use.
+- `opencode-go`: quota exhausted on 2026-10-06 (`429 GoUsageLimitError` / `402`). Every role was moved to `openai` (and `discuss` to local LM Studio) in `agents/models.json` and `advisor.json`. Move roles back only after the quota resets.
+- `amazon-bedrock`: env credentials (STS) were last seen invalid (`UnrecognizedClientException`). Refresh the AWS credentials before selecting a Bedrock model.
+- `lmstudio`: the local endpoint (`models.json`, `192.168.1.15:1234`) must be running, or `discuss` dispatches fail.
 
 ## Executor Lens and debugger support
 

@@ -37,7 +37,7 @@ if [ -x "$pi_node_bin/node" ]; then
   PATH=$pi_node_bin:$PATH
   export PATH
 fi
-# Pi 1.0.1 needs Node >=22.19.0; older shell shims must not select Node 16.
+# Pi 1.0.x needs Node >=22.19.0; older shell shims must not select Node 16.
 pi_supported_node() {
   "$1" -e 'const v=process.versions.node.split(".").map(Number);process.exit(v[0]>22||(v[0]===22&&v[1]>=19)?0:1)' 2>/dev/null
 }
