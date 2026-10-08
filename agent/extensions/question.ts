@@ -21,7 +21,20 @@ const Params = Type.Object({
 		description: Type.Optional(Type.String({ description: "One-line consequence or trade-off" })),
 	}), { minItems: 1, maxItems: 8, description: "Put the recommended option first and end its label with (Recommended). Do not add an 'other' option; it is appended automatically." }),
 	multiSelect: Type.Optional(Type.Boolean({ description: "true when several options can apply at once (e.g. which checks to run); default false" })),
+	ledger: Type.Optional(Type.String({ description: "Decision ledger for this interview, e.g. 'reshield/01'. Every question with the same ledger sees all earlier decisions." })),
+	decides: Type.Optional(Type.String({ pattern: "^[a-z0-9][a-z0-9-]{1,40}$", description: "kebab-case id of the one decision this question settles, e.g. 'enqueue-failure'. Asking an id that is already decided is refused unless revisit is true." })),
+	revisit: Type.Optional(Type.Boolean({ description: "true to reopen an already-decided id; say in context what changed and why" })),
 });
+
+/** Interview budget: past this many decisions the tool asks the model to wrap up. */
+export const DECISION_BUDGET = 10;
+type Decision = { id: string; question: string; answer: string; changed?: boolean };
+/** Per-process ledgers, keyed by ledger name. Exported for tests. */
+export const ledgers = new Map<string, Decision[]>();
+const clip = (text: string, max = 90) => text.length > max ? text.slice(0, max - 1) + "…" : text;
+export function ledgerSummary(entries: Decision[]) {
+	return entries.map((d, i) => `${i + 1}. ${d.id}: ${clip(d.answer)}${d.changed ? " (changed)" : ""}`).join("\n");
+}
 
 /** Keyboard-driven list. Exported for tests; rendering is plain text plus theme colours. */
 export function createPicker(question: string, options: Option[], multi: boolean, theme: Theme, done: (result: PickResult) => void, requestRender: () => void, context?: string) {
@@ -97,25 +110,42 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "question",
 		label: "Question",
-		description: "Ask the user one question as a selectable list: radio buttons by default, checkboxes with multiSelect. A final 'type your own answer' option is added automatically. Use for every interview or decision question instead of asking in prose. Put anything the user must read first (a summary, the design to confirm) in context, not in option descriptions.",
+		description: "Ask the user one question as a selectable list: radio buttons by default, checkboxes with multiSelect. A final 'type your own answer' option is added automatically. Use for every interview or decision question instead of asking in prose. Put anything the user must read first (a summary, the design to confirm) in context, not in option descriptions. In an interview, pass the same ledger on every call and a decides id per question: settled ids are refused, and the ledger is shown to the user and returned to you after each answer.",
 		parameters: Params,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const entries = params.ledger ? ledgers.get(params.ledger) ?? [] : [];
 			const reply = (text: string, answers: string[] | null) => ({ content: [{ type: "text" as const, text }], details: { question: params.question, context: params.context, answers } });
+			const previous = params.decides ? entries.findIndex(d => d.id === params.decides) : -1;
+			// Refuse a repeat before showing anything: the user should never see a settled question twice.
+			if (previous >= 0 && !params.revisit) {
+				const d = entries[previous];
+				return reply(`Not asked: "${d.id}" is already decision ${previous + 1} ("${d.question}" -> ${d.answer}). Do not ask it again in other words. If a later answer conflicts with it, call again with revisit: true and explain the conflict in context.\nDecisions so far:\n${ledgerSummary(entries)}`, null);
+			}
 			const cancelled = () => reply("User cancelled the question. Ask how they want to proceed.", null);
 			if (!ctx.hasUI || ctx.mode !== "tui") return reply("No interactive UI: ask this question in plain text instead.", null);
+			const decided = entries.length ? `# Decided so far (${entries.length})\n${ledgerSummary(entries)}` : "";
+			const shown = [params.context?.trim(), decided].filter(Boolean).join("\n") || undefined;
 			const multi = params.multiSelect === true;
-			const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker(params.question, params.options, multi, theme, done, () => tui.requestRender(), params.context));
+			const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker(params.question, params.options, multi, theme, done, () => tui.requestRender(), shown));
 			if (!result) return cancelled();
 			const answers = result.indices.map(i => params.options[i].label);
+			let typed: string | undefined;
 			if (result.other) {
-				const typed = (await ctx.ui.input(params.question, "Your answer"))?.trim();
+				typed = (await ctx.ui.input(params.question, "Your answer"))?.trim();
 				if (!typed) return cancelled();
 				answers.push(typed);
-				const picked = answers.length > 1 ? `User selected: ${answers.slice(0, -1).join("; ")}. ` : "";
-				return reply(`${picked}User wrote: ${typed}`, answers);
 			}
-			return reply(`User selected: ${answers.join("; ")}`, answers);
+			let text = typed ? `${answers.length > 1 ? `User selected: ${answers.slice(0, -1).join("; ")}. ` : ""}User wrote: ${typed}` : `User selected: ${answers.join("; ")}`;
+			if (params.ledger && params.decides) {
+				const entry = { id: params.decides, question: params.question, answer: answers.join("; "), changed: previous >= 0 };
+				previous >= 0 ? entries[previous] = entry : entries.push(entry);
+				ledgers.set(params.ledger, entries);
+				text += `\nDecisions so far (${params.ledger}):\n${ledgerSummary(entries)}`;
+				if (previous >= 0) text += `\nDecision ${previous + 1} changed: check whether later decisions depend on it and revisit those too.`;
+				if (entries.length >= DECISION_BUDGET) text += `\n${entries.length} decisions recorded. Ask only what blocks drafting the tasks; otherwise go to the confirm step.`;
+			}
+			return reply(text, answers);
 		},
 		// Keep the context and the answer in the chat after the picker closes.
 		renderResult(result, _options, theme) {

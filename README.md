@@ -145,7 +145,7 @@ You don't have to type `/plan`. Asking for an implementation plan in plan or exe
 
 1. **Mission.** For a new mission, agree the ordered list of goals (one line each). For an existing one, pick the next `pending` goal.
 2. **Context.** A scout reads the code relevant to this goal and the `## Deferred` notes left by earlier goals.
-3. **Grill.** The main session interviews you using the `grill-me` skill. One question at a time, shown by the `question` tool as radio buttons, or checkboxes when several answers apply (↑↓ move, Space toggle, 1-9 shortcut, Enter submit). The recommended answer comes first and the last row is "type your own answer", until every decision is settled. It answers from the code itself where it can and pushes back on anything this goal doesn't need.
+3. **Grill.** The main session interviews you using the `grill-me` skill. One question at a time, shown by the `question` tool as radio buttons, or checkboxes when several answers apply (↑↓ move, Space toggle, 1-9 shortcut, Enter submit). The recommended answer comes first and the last row is "type your own answer", and a running decision ledger stops it from asking a settled question twice, until every decision is settled. It answers from the code itself where it can and pushes back on anything this goal doesn't need.
 4. **Draft.** The planner writes the goal file with numbered tasks, each with files, change, verify command, dependencies and an optional parallel group.
 5. **Checkpoints.** You give the lines (`after T4, after T10`) and a review mode for each. You can edit tasks here too.
 6. **Finalize.** The planner fills in the checkpoints and checklist, and marks the goal `planned`.

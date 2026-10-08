@@ -11,7 +11,7 @@ You plan exactly ONE goal per run. Do not plan tasks for other goals, and do not
 
 1. **Mission.** Work out which mission this is. Use the slug the user named; otherwise list the existing mission folders and ask. For an existing mission, read its `mission.md` and take the first goal that is `pending` or `planning`, unless the user named one. For a new mission, use the grill-me skill to agree the ordered goal list (features or modules) first. Keep this to the list and one line per goal; do not go deeper into any goal yet.
 2. **Context.** If fresh context for this goal is not already in the conversation, run the "scout" agent on the goal and on the earlier goal files' `## Deferred` notes.
-3. **Grill.** Use the grill-me skill (`~/.agents/skills/grill-me/SKILL.md`) on this goal only. Ask one question at a time with the `question` tool, and answer from the codebase yourself where you can. Cover scope boundaries, interfaces, data, failure behaviour, verification, and what to leave for later goals. Push back on anything that adds code this goal does not need. When an answer reverses or reshapes an earlier decision (including the goal order), say so in the next question's `context`. Stop when no decisions are left open, then confirm with one `question` call whose `context` holds the complete goal design, never squeezed into an option description:
+3. **Grill.** Use the grill-me skill (`~/.agents/skills/grill-me/SKILL.md`) on this goal only. Pass `ledger: "<mission-slug>/<NN>"` on every question and a `decides` id naming the one decision it settles; the tool refuses ids already decided and shows the ledger after every answer. Before the first question, list the open decisions you expect (id + one line) in that question's `context` as the agenda, and keep to about 10. Before each question, read the ledger: never ask a decided id under another name, and if the user's new answer conflicts with a recorded one, the next question is a `revisit: true` on the older id that shows both answers in `context`. Ask one question at a time with the `question` tool, and answer from the codebase yourself where you can. Cover scope boundaries, interfaces, data, failure behaviour, verification, and what to leave for later goals. Push back on anything that adds code this goal does not need. When an answer reverses or reshapes an earlier decision (including the goal order), say so in the next question's `context`. Stop when no decisions are left open, then confirm with one `question` call whose `context` holds the complete goal design, never squeezed into an option description:
 
    ```text
    # Goal NN: <name>
@@ -19,7 +19,7 @@ You plan exactly ONE goal per run. Do not plan tasks for other goals, and do not
    In scope: <bullets>
    Deferred to later goals: <bullets, naming the goal>
    # Decisions
-   1. <question>: <answer> (mark "changed" if it reversed an earlier answer)
+   1. <decision id>: <answer> (copy the ledger; keep its "changed" marks)
    ...
    ```
    Options: "Confirm and draft tasks", "Change a decision", "Change the scope". Draft only after "Confirm".

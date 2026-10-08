@@ -126,4 +126,17 @@ check(kept.includes("Goal 01") && kept.includes("Outcome: x") && kept.includes("
 check((await run(null)).details.answers === null, "cancelled question returns no answer");
 check((await run({ indices: [], other: true }, "")).details.answers === null, "empty typed answer counts as cancel");
 check((await run({ indices: [0], other: false }, "", false, "rpc")).content[0].text.includes("plain text"), "question falls back to plain text outside the TUI");
+let pickerCalls = 0, lastView = "";
+const interview = (decides, result, extra = {}) => questionTool.execute("q", { question: `Q ${decides}?`, options: opts, ledger: "test/01", decides, ...extra }, undefined, undefined, { hasUI: true, mode: "tui", ui: {
+  custom: async factory => { pickerCalls++; lastView = factory({ requestRender() {} }, plain, {}, () => {}).render(100).join("\n"); return result; }, input: async () => "" } });
+const firstAnswer = await interview("enqueue-failure", { indices: [0], other: false });
+check(firstAnswer.content[0].text.includes("1. enqueue-failure: Yes (Recommended)"), "answer is recorded in the ledger and returned to the model");
+const repeat = await interview("enqueue-failure", { indices: [1], other: false });
+check(pickerCalls === 1 && repeat.details.answers === null && repeat.content[0].text.startsWith("Not asked"), "a decided id is refused without showing the user anything");
+await interview("wallet-reuse", { indices: [1], other: false });
+check(lastView.includes("Decided so far (1)") && lastView.includes("enqueue-failure: Yes"), "the ledger is shown in the next picker");
+const changed = await interview("enqueue-failure", { indices: [1], other: false }, { revisit: true });
+check(changed.content[0].text.includes("1. enqueue-failure: No (changed)") && changed.content[0].text.includes("Decision 1 changed"), "revisit replaces the decision and marks it changed");
+for (let i = 0; i < questionModule.DECISION_BUDGET - 2; i++) await interview(`extra-${i}`, { indices: [0], other: false });
+check((await interview("one-more", { indices: [0], other: false })).content[0].text.includes("Ask only what blocks drafting"), "the tool asks the model to wrap up past the decision budget");
 console.log(`\nPassed ${checks} mode checks.`);
