@@ -33,6 +33,7 @@ It turns Pi into a small team of single-purpose agents run by one orchestrator (
 | **Checkpoint commits** | The executor commits only the files it names, and only after every check passes. |
 | **Sandbox and credentials guard** | Bash runs under macOS Seatbelt. A separate guard blocks file tools from reading `.env`, SSH keys, `auth.json` and personal notes. |
 | **Live progress** | Subagent panels stream thinking, text, tool calls, elapsed time and tokens per second. |
+| **`question` tool** | Every interview question appears as a select list, with the recommended answer first and a final "type your own answer" option. Available in all modes. |
 | **Advisor** | `pi-advisor-flow` pairs the main model with a stronger reviewer that steps in after repeated failures. |
 | **Code intelligence and debugging** | The executor has Lens (diagnostics, symbols, LSP, AST search/replace) and a batch LLDB `debug` tool. |
 
@@ -144,7 +145,7 @@ You don't have to type `/plan`. Asking for an implementation plan in plan or exe
 
 1. **Mission.** For a new mission, agree the ordered list of goals (one line each). For an existing one, pick the next `pending` goal.
 2. **Context.** A scout reads the code relevant to this goal and the `## Deferred` notes left by earlier goals.
-3. **Grill.** The main session interviews you using the `grill-me` skill. One question at a time, each with a recommended answer, until every decision is settled. It answers from the code itself where it can and pushes back on anything this goal doesn't need.
+3. **Grill.** The main session interviews you using the `grill-me` skill. One question at a time, shown as a select list by the `question` tool: the recommended answer first, and a last "type your own answer" option, until every decision is settled. It answers from the code itself where it can and pushes back on anything this goal doesn't need.
 4. **Draft.** The planner writes the goal file with numbered tasks, each with files, change, verify command, dependencies and an optional parallel group.
 5. **Checkpoints.** You give the lines (`after T4, after T10`) and a review mode for each. You can edit tasks here too.
 6. **Finalize.** The planner fills in the checkpoints and checklist, and marks the goal `planned`.
@@ -256,6 +257,7 @@ Restart Pi or run `/reload` after changing extensions or `settings.json`.
     │   ├── modes/            # discuss / plan / execute switch + footer speed
     │   ├── creds-guard.ts    # tool-level credentials and vault guard
     │   ├── compact-read.ts   # compact display for read results
+    │   ├── question.ts       # select-list questions with a type-your-own option
     │   ├── advisor-patch-guard.ts
     │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed
     ├── patches/              # local fix for pi-advisor-flow's missing session id

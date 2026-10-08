@@ -93,6 +93,8 @@ repo-controlled prompts can run bash).
 - creds-guard: agents may only touch `<vault>/Agents/**`; the rest of the vault (personal notes) is unreadable to every agent; sessions whose cwd is inside the vault are exempt
 - Date rule: planner never guesses today's date — orchestrator passes `Date:` (from `date +%F`)
 
+- `extensions/question.ts` registers `question`: one question as a select list (`ctx.ui.select`), with a final "type your own answer" entry that opens a text input. `/plan` and the planning rule ask every interview, confirmation and checkpoint question through it. It is allowed in every mode and falls back to plain text when there is no UI. Subagents can't use it (not in any `tools:` list).
+
 ## Live progress and dispatch speed
 
 - `extensions/compact-read.ts` keeps native read execution and replaces its display with a muted `READ` path/range and a short line-count summary. Text contents stay hidden even in expanded results; the agent still receives the native content. Read errors remain visible. Subagent read activity uses the same neutral labels. Native image previews still follow Pi's image-display setting.

@@ -175,7 +175,7 @@ if (process.argv.includes("--mode")) {
 	await assert.rejects(sandboxHooks.get("user_bash")().operations.exec(), /Sandbox unavailable/); checks++;
 
 	const loader = await import(path.join(modules, "@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"));
-	const loaded = await loader.loadExtensions(["creds-guard.ts", "compact-read.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts"].map(p => path.join(root, "extensions", p)), root);
+	const loaded = await loader.loadExtensions(["creds-guard.ts", "compact-read.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts", "question.ts"].map(p => path.join(root, "extensions", p)), root);
 	assert.deepEqual(loaded.errors, []); checks++;
-	console.log(`Passed ${checks} harness regression checks; all six extensions load.`);
+	console.log(`Passed ${checks} harness regression checks; all seven extensions load.`);
 }

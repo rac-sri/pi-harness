@@ -29,7 +29,7 @@ const SCOPE_RULES = `- Do exactly what the user asked, at the size they asked fo
 - If a subagent or advisor call fails (429/402/quota/timeout), do not retry or route around it: do the work directly if small, otherwise tell the user what failed and stop.`;
 
 // Implementation plans always go through the mission/goal planner, whether or not the user typed /plan.
-const PLANNING_RULE = `- When the user asks for an implementation plan ("make the plan", "write the steps"), follow the mission/goal workflow in ~/.pi/agent/prompts/plan.md instead of writing a full plan inline: propose a mission slug and its ordered goal list (one line per goal), get it confirmed, then interview the user on the first unplanned goal only with the grill-me skill, then dispatch the planner as that file describes. Never write detailed steps for more than one goal at a time.`;
+const PLANNING_RULE = `- When the user asks for an implementation plan ("make the plan", "write the steps"), follow the mission/goal workflow in ~/.pi/agent/prompts/plan.md instead of writing a full plan inline: propose a mission slug and its ordered goal list (one line per goal), get it confirmed, then interview the user on the first unplanned goal only with the grill-me skill, asking every question through the question tool (select list, recommended option first), then dispatch the planner as that file describes. Never write detailed steps for more than one goal at a time.`;
 
 const DISCUSS_MODE_INSTRUCTIONS = `${CONTEXT_TAG.discuss}
 You are in DISCUSS mode: read the working tree and reason about it; you cannot run commands or change files.
@@ -63,7 +63,7 @@ let mode: Mode = DEFAULT_MODE;
 let saved: string[] | undefined; // full active set captured when restricting
 
 // Read-only tools stay available in DISCUSS: inspect the working tree, never run or change it.
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "subagent", "ask_advisor", "web_search", "fetch_content", "get_search_content", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
+const READ_ONLY_TOOLS = new Set(["question", "read", "grep", "find", "ls", "subagent", "ask_advisor", "web_search", "fetch_content", "get_search_content", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
 const READ_ONLY_LSP_OPERATIONS = new Set(["definition", "typeDefinition", "declaration", "references", "hover", "signatureHelp", "documentSymbol", "findSymbol", "workspaceSymbol", "implementation", "prepareCallHierarchy", "incomingCalls", "outgoingCalls", "workspaceDiagnostics", "capabilities"]);
 
 export default function (pi: ExtensionAPI) {
