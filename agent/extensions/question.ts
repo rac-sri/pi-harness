@@ -29,10 +29,10 @@ const Params = Type.Object({
 /** Interview budget: past this many decisions the tool asks the model to wrap up. */
 export const DECISION_BUDGET = 10;
 type Decision = { id: string; question: string; answer: string; changed?: boolean };
-/** Per-process ledgers, keyed by ledger name. Exported for tests. */
-export const ledgers = new Map<string, Decision[]>();
+/** Per-process ledgers, keyed by ledger name. */
+const ledgers = new Map<string, Decision[]>();
 const clip = (text: string, max = 90) => text.length > max ? text.slice(0, max - 1) + "…" : text;
-export function ledgerSummary(entries: Decision[]) {
+function ledgerSummary(entries: Decision[]) {
 	return entries.map((d, i) => `${i + 1}. ${d.id}: ${clip(d.answer)}${d.changed ? " (changed)" : ""}`).join("\n");
 }
 

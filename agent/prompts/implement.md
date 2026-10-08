@@ -20,11 +20,11 @@ When every checkpoint has passed, set the goal file to `status: done` and its `m
 
 **Path A or B.**
 
-**Path A — direct (default).** Use when the change touches a few files, the fix or feature is clear from the request, and it does not alter protocol, cryptographic, persistence, or concurrency semantics. A bug fix with an obvious cause is Path A.
+**Path A: direct (default).** Use when the change touches a few files, the fix or feature is clear from the request, and it does not alter protocol, cryptographic, persistence, or concurrency semantics. A bug fix with an obvious cause is Path A.
 1. Dispatch the "executor" agent once, in single mode, with: `Project: <project>. Repo: <repo>. Date: <date>.` followed by the request and any context you already have. Do NOT run scout or planner, and do NOT write a plan file.
 2. Report the files changed, the verification result, and the commit hash if one was made.
 
-**Path B — planned.** Use only for multi-component changes, unclear designs, or protocol, cryptographic, persistence, or concurrency changes.
+**Path B: planned.** Use only for multi-component changes, unclear designs, or protocol, cryptographic, persistence, or concurrency changes.
 1. Use the "scout" agent to find relevant code (skip if fresh context is already present).
 2. Use the "planner" agent with the scout output ({previous}), prefixed with `Project: <project>. Repo: <repo>. Date: <date>.`. It writes a plan file and ends with `## Plan File`.
 3. Set the plan's `status: executing`, then dispatch the "executor" in single mode with the complete planner output and the same prefix.
