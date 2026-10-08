@@ -99,7 +99,7 @@ Switch with `/mode discuss|plan|execute`, Tab, or Ctrl+Alt+M. Autocomplete moves
 | `/discuss <topic>` | One `discuss` agent with no tools or project context. Paste in anything it should know. | No |
 | `/plan <mission>` | Plans one goal: interview, planner draft, your checkpoints, planner finalize. See [below](#micro-managed-planning-missions-and-goals). | No |
 | `/implement <request>` | Path A: one executor for a small, clear task. Path B: scout, planner, executor, reviewer for multi-component or sensitive changes. | Yes |
-| `/implement` | Opens a picker of this repo's planned goals, next goal first, then runs the chosen one (Path G) checkpoint by checkpoint, stopping for review where you asked. `/implement <mission>` limits the list to one mission. | Yes |
+| `/implement` | Opens a picker of up to 4 of this repo's goals, next goal first, then runs the chosen one (Path G) checkpoint by checkpoint, stopping for review where you asked. `/implement <mission>` limits the list to one mission. | Yes |
 | `/build-and-review <request>` | Scout, executor, adversarial reviewer, then an executor fix run only if the reviewer found problems. | Yes |
 
 Any command stops and reports `PROVIDER UNAVAILABLE` on quota or auth errors (429/402/401/403) instead of retrying.
@@ -145,7 +145,7 @@ You don't have to type `/plan`. Asking for an implementation plan in plan or exe
 
 #### Running it: `/implement`
 
-Type `/implement` with no arguments. It lists the planned goals of every mission whose `repo:` contains your current directory: goals being executed first, then planned ones, newest mission first. The full goal list of each mission is shown above the choices. Pick one, or type a request instead.
+Type `/implement` with no arguments. It offers up to 4 goals from every mission whose `repo:` contains your current directory: goals being executed first, then planned ones, then the next unplanned ones, newest mission first. Choosing an unplanned goal starts `/plan` for that goal instead. Each mission's full goal list is shown above the choices, and the last option lets you type a request.
 
 For each checkpoint segment:
 

@@ -30,7 +30,7 @@ Pi's global config directory is `~/.pi/agent/` (`getAgentDir()`). `PI_CODING_AGE
 - The orchestrator passes `Date:` from `date +%F`. The planner never guesses the date.
 - Plan files live outside the checkout. A tracked plan file would make checkpoint commits stale as soon as the executor ticks a box.
 - Any request for an implementation plan goes through the `/plan` flow, in plan or execute mode, whether or not the user typed `/plan`. Other multi-step requests in execute mode are just done.
-- `extensions/implement-picker.ts` turns a bare `/implement` (or `/implement <mission>`) into `/implement <goal file>` through Pi's `input` hook, before prompt-template expansion, so the template is unchanged. Missions are matched by their `repo:` field, not the project folder name, because the planner may name the project after the monorepo. Free-text requests pass through.
+- `extensions/implement-picker.ts` turns a bare `/implement` (or `/implement <mission>`) into a picker of up to 4 goals (executing, planned, then unplanned) and rewrites the choice to `/implement <goal file>`, or `/plan <mission> goal NN` for an unplanned goal, through Pi's `input` hook, before prompt-template expansion, so the template is unchanged. Missions are matched by their `repo:` field, not the project folder name, because the planner may name the project after the monorepo. Free-text requests pass through.
 - Path G (`/implement <goal file>`) runs parallel-group tasks in separate git worktrees, because the writer lock is per repository root, then cherry-picks them back in task order. It has not been exercised end to end yet.
 
 ### The `question` tool

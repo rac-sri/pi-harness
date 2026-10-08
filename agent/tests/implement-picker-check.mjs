@@ -16,7 +16,7 @@ try {
 		fs.writeFileSync(path.join(dir, "mission.md"), `---\nproject: ${project}\nmission: ${slug}\nrepo: ${repoPath}\ndate: ${date}\n---\n# Mission\n\n## Goals\n| # | goal | status | file |\n|---|------|--------|------|\n${rows.map(r => `| ${r.join(" | ")} |`).join("\n")}\n`);
 		return dir;
 	};
-	const reshield = mission("nightshade", "hyperliquid-reshield", repo, "2026-10-08", [["01", "Queue and manager", "planned", "01-queue.md"], ["02", "Close handoff", "pending", "-"]]);
+	const reshield = mission("nightshade", "hyperliquid-reshield", repo, "2026-10-08", [["01", "Queue and manager", "planned", "01-queue.md"], ["02", "Close handoff", "pending", "-"], ["03", "Checkpoints", "pending", "-"], ["04", "Withdrawal", "pending", "-"]]);
 	const older = mission("nightshade", "fees", repo, "2026-09-01", [["01", "Fee table", "done", "01-fees.md"], ["02", "Fee audit", "executing", "02-audit.md"]]);
 	mission("elsewhere", "unrelated", other, "2026-10-08", [["01", "Not this repo", "planned", "01-x.md"]]);
 	fs.mkdirSync(path.join(fixture, "agent/agents"), { recursive: true });
@@ -27,8 +27,8 @@ try {
 	const cwd = path.join(repo, "venue/hyperliquid_coordinator");
 	const found = picker.findMissions(path.join(fixture, "plans/{project}"), cwd);
 	check(found.map(m => m.slug).sort().join() === "fees,hyperliquid-reshield", "missions are matched by repo path across project folders, from a subdirectory");
-	const goals = picker.runnableGoals(found);
-	check(goals.map(g => `${g.mission}/${g.number}`).join() === "fees/02,hyperliquid-reshield/01", "executing goals come before planned ones; done and pending are excluded");
+	const goals = picker.pickerGoals(found);
+	check(goals.map(g => `${g.mission}/${g.number}`).join() === "fees/02,hyperliquid-reshield/01,hyperliquid-reshield/02,hyperliquid-reshield/03", "executing, then planned, then unplanned goals, done excluded, capped at 4");
 	check(goals[1].file === path.join(reshield, "01-queue.md") && goals[0].file === path.join(older, "02-audit.md"), "goal files resolve inside their mission folder");
 
 	let handler; picker.default({ on: (name, fn) => { if (name === "input") handler = fn; } });
@@ -39,7 +39,9 @@ try {
 
 	const chosen = await run("/implement", { indices: [0], other: false });
 	check(chosen.action === "transform" && chosen.text === `/implement ${path.join(older, "02-audit.md")}`, "bare /implement rewrites to the chosen goal file");
-	check(shown.includes("02 Fee audit (next)") && shown.includes("02 Close handoff · pending") && !shown.includes("Not this repo"), "picker shows the next goal first and the full goal list as context");
+	check(shown.includes("02 Fee audit (next)") && shown.includes("04 Withdrawal · pending") && !shown.includes("Not this repo"), "picker shows the next goal first and the full goal list as context");
+	check(shown.includes("4. 03 Checkpoints") && shown.includes("5. Something else") && shown.includes("not planned yet"), "up to 4 goal options, unplanned ones labelled, then Something else");
+	check((await run("/implement", { indices: [2], other: false })).text === "/plan hyperliquid-reshield goal 02: Close handoff", "choosing an unplanned goal starts /plan for that goal");
 	check((await run("/implement hyperliquid-reshield", { indices: [0], other: false })).text.endsWith("01-queue.md"), "/implement <mission> limits the list to that mission");
 	check((await run("/implement fix the retry bug", null)).action === "continue", "a free-text request passes through to the template");
 	check((await run("/implement typo", null)).action === "continue", "a one-word request that isn't a mission passes through");
