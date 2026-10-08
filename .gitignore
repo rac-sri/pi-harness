@@ -20,4 +20,5 @@ agent/install/
 agent/sessions/
 agent/web-search-cache/
 agent/crashes.json
+agent/harness/
 .DS_Store

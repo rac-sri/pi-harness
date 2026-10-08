@@ -29,6 +29,10 @@ import {
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { plannerPrompt } from "./plans.ts";
+import { loadRuntimeConfig } from "./runtime.ts";
+import { acquireWriter } from "../lib/writer-lock.ts";
+import { TokenSpeed } from "../lib/token-speed.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -51,6 +55,7 @@ function formatUsageStats(
 		cost: number;
 		contextTokens?: number;
 		turns?: number;
+		outputRate?: number;
 	},
 	model?: string,
 ): string {
@@ -58,6 +63,7 @@ function formatUsageStats(
 	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
 	if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
 	if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
+	if (usage.outputRate !== undefined) parts.push(`${usage.outputRate.toFixed(1)} tok/s avg`);
 	if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
 	if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
 	if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
@@ -79,6 +85,8 @@ function formatToolCall(
 	};
 
 	switch (toolName) {
+		case "harness_check":
+			return themeFg("accent", `check ${String(args.action ?? "")}`) + themeFg("dim", ` ${String(args.run ?? "")}${args.check ? " / " + String(args.check) : ""}`);
 		case "bash": {
 			const command = (args.command as string) || "...";
 			const preview = command.length > 60 ? `${command.slice(0, 60)}...` : command;
@@ -89,13 +97,13 @@ function formatToolCall(
 			const filePath = shortenPath(rawPath);
 			const offset = args.offset as number | undefined;
 			const limit = args.limit as number | undefined;
-			let text = themeFg("accent", filePath);
+			let text = themeFg("muted", filePath);
 			if (offset !== undefined || limit !== undefined) {
 				const startLine = offset ?? 1;
 				const endLine = limit !== undefined ? startLine + limit - 1 : "";
-				text += themeFg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+				text += themeFg("dim", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 			}
-			return themeFg("muted", "read ") + text;
+			return themeFg("muted", "READ ") + text;
 		}
 		case "write": {
 			const rawPath = (args.file_path || args.path || "...") as string;
@@ -144,6 +152,7 @@ interface UsageStats {
 	cost: number;
 	contextTokens: number;
 	turns: number;
+	outputRate?: number;
 }
 
 interface SingleResult {
@@ -158,6 +167,13 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	startedAt?: number;
+	elapsedMs?: number;
+	phase?: string;
+	liveText?: string;
+	liveThinking?: string;
+	liveTool?: { name: string; args: Record<string, unknown> };
+	liveToolOutput?: string;
 }
 
 interface SubagentDetails {
@@ -183,9 +199,14 @@ function isFailedResult(result: SingleResult): boolean {
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 }
 
+// Quota/billing/auth failures are not transient: retrying or re-dispatching burns turns.
+const PROVIDER_UNAVAILABLE = /\b(?:429|402|401|403)\b|usage limit|insufficient (?:account )?funds|quota|rate limit/i;
+
 function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
-		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+		const output = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+		if (!PROVIDER_UNAVAILABLE.test(output)) return output;
+		return `${output}\nPROVIDER UNAVAILABLE for ${result.agent}: do not retry or dispatch other subagents on this provider. Do the user's request directly if it is small; otherwise report this failure to the user and stop.`;
 	}
 	return getFinalOutput(result.messages) || "(no output)";
 }
@@ -300,7 +321,20 @@ export async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = ["--mode", "json", "-p", "--no-session", "--no-prompt-templates"];
+	if (agent.name === "discuss") args.push("--no-skills");
+	// Built-in-only roles do not need to initialize advisor, lens, web, or mode
+	// extensions. Retain the credential guard and sandbox for shell/check tools.
+	const builtInTools = new Set(["read", "write", "edit", "bash", "grep", "find", "ls", "harness_check"]);
+	if (agent.tools && agent.tools.every(tool => builtInTools.has(tool))) {
+		args.push("--no-extensions", "-e", path.join(getAgentDir(), "extensions", "creds-guard.ts"));
+		if (agent.tools.some(tool => tool === "bash" || tool === "harness_check")) args.push("-e", path.join(getAgentDir(), "extensions", "sandbox", "index.ts"));
+	}
+	// Executor loads Lens alongside the guard/sandbox without unrelated plugins.
+	const lensTools = new Set(["debug", "lens_diagnostics", "symbol_search", "effective_config", "project_report", "module_report", "read_symbol", "read_enclosing", "pi_lens_activate_tools", "lsp_navigation", "ast_grep_search", "ast_grep_outline", "ast_grep_replace"]);
+	if (agent.name === "executor" && agent.tools?.some(tool => lensTools.has(tool)) && agent.tools.every(tool => builtInTools.has(tool) || lensTools.has(tool))) {
+		args.push("--no-extensions", "-e", path.join(getAgentDir(), "extensions", "creds-guard.ts"), "-e", path.join(getAgentDir(), "extensions", "sandbox", "index.ts"), "-e", path.join(getAgentDir(), "npm", "node_modules", "pi-lens", "dist", "index.js"));
+	}
 	const inheritsDispatchConfig = !agent.model;
 	const model = agent.model ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
@@ -316,12 +350,17 @@ export async function runSingleAgent(
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 	let scratchDir: string | null = null;
+	let writer: ReturnType<typeof acquireWriter> | undefined;
+	let runtime: ReturnType<typeof loadRuntimeConfig>;
+	let lastUpdate = 0;
 
 	const currentResult: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
 		task,
-		exitCode: 0,
+		exitCode: -1,
+		startedAt: Date.now(),
+		phase: "starting",
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -329,7 +368,10 @@ export async function runSingleAgent(
 		step,
 	};
 
-	const emitUpdate = () => {
+	const emitUpdate = (force = false) => {
+		currentResult.elapsedMs = Date.now() - currentResult.startedAt!;
+		if (!force && Date.now() - lastUpdate < (runtime?.updateIntervalMs ?? 150)) return;
+		lastUpdate = Date.now();
 		if (onUpdate) {
 			onUpdate({
 				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
@@ -339,8 +381,13 @@ export async function runSingleAgent(
 	};
 
 	try {
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		runtime = loadRuntimeConfig();
+		if (!args.includes("--thinking") && !/:(off|minimal|low|medium|high|xhigh)$/.test(model ?? "") && runtime.thinking[agent.name]) args.push("--thinking", runtime.thinking[agent.name]);
+		if (agent.tools === undefined || agent.tools.some(t => ["write", "edit", "bash", "harness_check"].includes(t)) && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
+		emitUpdate(true);
+		const systemPrompt = agent.name === "planner" ? plannerPrompt(agent.systemPrompt, cwd ?? defaultCwd) : agent.systemPrompt;
+		if (systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(agent.name, systemPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -365,7 +412,22 @@ export async function runSingleAgent(
 				env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_READ_ONLY: process.env.PI_SUBAGENT_READ_ONLY === "1" || ["scout", "reviewer"].includes(agent.name) ? "1" : "0" },
 				detached: true,
 			});
+			if (proc.pid) writer?.childStarted(proc.pid);
 			let buffer = "";
+			const speed = new TokenSpeed();
+			let limitReason: string | undefined;
+			const checkpointRuns = new Map<string, boolean>();
+			// tool_execution_end carries no args; remember them from tool_execution_start.
+			const toolArgs = new Map<string, any>();
+			let killTimer: NodeJS.Timeout | undefined;
+			const stopForLimit = (reason: string) => {
+				if (limitReason) return;
+				limitReason = reason;
+				try { if (proc.pid) process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill("SIGTERM"); }
+				killTimer = setTimeout(() => { try { if (proc.pid) process.kill(-proc.pid, "SIGKILL"); } catch { proc.kill("SIGKILL"); } }, 5000);
+			};
+			const deadline = setTimeout(() => stopForLimit(`Dispatch exceeded ${runtime.timeoutSeconds}s deadline`), runtime.timeoutSeconds * 1000);
+			const heartbeat = setInterval(() => emitUpdate(), 1000);
 
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
@@ -375,12 +437,60 @@ export async function runSingleAgent(
 				} catch {
 					return;
 				}
+				if (event.type === "message_start" && event.message?.role === "assistant") {
+					speed.start();
+					currentResult.phase = "waiting for model";
+					currentResult.liveText = undefined;
+					currentResult.liveThinking = undefined;
+					emitUpdate(true);
+				}
 
+				if (event.type === "message_update" && event.message?.role === "assistant") {
+					const rate = speed.update(event.message.usage?.output);
+					if (rate !== undefined) currentResult.usage.outputRate = rate;
+					const parts = event.message.content ?? [];
+					currentResult.liveText = parts.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n").slice(-12000);
+					currentResult.liveThinking = parts.filter((p: any) => p.type === "thinking").map((p: any) => p.thinking).join("\n").slice(-12000);
+					currentResult.phase = event.assistantMessageEvent?.type?.startsWith("thinking") ? "thinking" : "responding";
+					emitUpdate();
+				}
+				if (event.type === "tool_execution_start") {
+					if (event.toolCallId) toolArgs.set(event.toolCallId, event.args ?? {});
+					if (["write", "edit", "bash", "debug", "ast_grep_replace", "lsp_navigation"].includes(event.toolName)) {
+						const activeRun = [...checkpointRuns.keys()].at(-1);
+						if (activeRun) checkpointRuns.set(activeRun, false);
+					}
+					currentResult.phase = "running tool";
+					currentResult.liveToolOutput = undefined;
+					currentResult.liveTool = { name: event.toolName, args: event.args ?? {} };
+					emitUpdate(true);
+				}
+				if (event.type === "tool_execution_update") {
+					currentResult.liveToolOutput = (event.partialResult?.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").slice(-4000);
+					emitUpdate();
+				}
+				if (event.type === "tool_execution_end") {
+					const args = event.args ?? toolArgs.get(event.toolCallId);
+					toolArgs.delete(event.toolCallId);
+					if (event.toolName === "harness_check" && args?.run) {
+						const action = args.action;
+						if (action === "define" && !event.isError) checkpointRuns.set(args.run, false);
+						if (["complete", "checkpoint"].includes(action)) checkpointRuns.set(args.run, !event.isError && ["verified", "committed"].includes(event.result?.details?.phase));
+						if (["implemented", "verify"].includes(action)) checkpointRuns.set(args.run, false);
+					}
+					currentResult.phase = event.isError ? "tool failed" : "working";
+					currentResult.liveTool = undefined;
+					emitUpdate(true);
+				}
 				if (event.type === "message_end" && event.message) {
 					const msg = event.message as Message;
 					currentResult.messages.push(msg);
+					currentResult.liveText = undefined;
+					currentResult.liveThinking = undefined;
 
 					if (msg.role === "assistant") {
+						const rate = speed.update(msg.usage?.output);
+						if (rate !== undefined) currentResult.usage.outputRate = rate;
 						currentResult.usage.turns++;
 						const usage = msg.usage;
 						if (usage) {
@@ -391,6 +501,8 @@ export async function runSingleAgent(
 							currentResult.usage.cost += usage.cost?.total || 0;
 							currentResult.usage.contextTokens = usage.totalTokens || 0;
 						}
+						if (currentResult.usage.turns >= runtime.maxTurns) stopForLimit(`Dispatch reached ${runtime.maxTurns} turns`);
+						if (currentResult.usage.output >= runtime.maxOutputTokens) stopForLimit(`Dispatch reached ${runtime.maxOutputTokens} output tokens`);
 						if (!currentResult.model && msg.model) currentResult.model = msg.model;
 						if (msg.stopReason) currentResult.stopReason = msg.stopReason;
 						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
@@ -412,21 +524,30 @@ export async function runSingleAgent(
 			});
 
 			proc.stderr.on("data", (data) => {
-				currentResult.stderr += data.toString();
+				currentResult.stderr = (currentResult.stderr + data.toString()).slice(-65536);
 			});
 
-				let killTimer: NodeJS.Timeout | undefined;
 				let killProc: (() => void) | undefined;
 				let closed = false;
 				proc.on("close", (code) => {
 					closed = true;
+					clearTimeout(deadline);
+					clearInterval(heartbeat);
 					if (killTimer) clearTimeout(killTimer);
 					if (killProc) signal?.removeEventListener("abort", killProc);
 					if (buffer.trim()) processLine(buffer);
+					if (limitReason) { currentResult.stopReason = "error"; currentResult.errorMessage = limitReason; }
+					if (agent.name === "executor" && (!checkpointRuns.size || [...checkpointRuns.values()].some(value => !value))) {
+						currentResult.stopReason = "error";
+						currentResult.errorMessage ??= "Executor completion rejected: required harness_check completion/checkpoint evidence is missing or was followed by further edits/commands.";
+					}
 					resolve(code ?? 1);
 			});
 
-			proc.on("error", () => {
+			proc.on("error", (error) => {
+				clearTimeout(deadline);
+				clearInterval(heartbeat);
+				currentResult.errorMessage = error.message;
 				resolve(1);
 			});
 
@@ -447,9 +568,20 @@ export async function runSingleAgent(
 		});
 
 		currentResult.exitCode = exitCode;
+		currentResult.phase = isFailedResult(currentResult) ? "failed" : "completed";
+		currentResult.liveTool = undefined;
+		emitUpdate(true);
 		if (wasAborted) throw new Error("Subagent was aborted");
 		return currentResult;
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		currentResult.exitCode = 1;
+		currentResult.phase = "failed";
+		currentResult.errorMessage = error instanceof Error ? error.message : String(error);
+		emitUpdate(true);
+		return currentResult;
 	} finally {
+		writer?.release();
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);
@@ -714,6 +846,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					details: makeDetails("parallel")(results),
+					isError: successCount !== results.length,
 				};
 			}
 
@@ -803,7 +936,32 @@ export default function (pi: ExtensionAPI) {
 				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 			}
 
+			if (details.results.some(r => r.exitCode === -1)) {
+				const container = new Container();
+				for (const r of details.results) {
+					const running = r.exitCode === -1;
+					const icon = running ? "⏳" : isFailedResult(r) ? "✗" : "✓";
+					const elapsed = Math.floor((r.elapsedMs ?? 0) / 1000);
+					container.addChild(new Text(`${icon} ${theme.fg("accent", r.agent)} · ${r.phase ?? (running ? "queued" : "completed")} · ${elapsed}s${r.usage.outputRate !== undefined ? " · " + r.usage.outputRate.toFixed(1) + " tok/s avg" : ""}${r.model ? " · " + r.model : ""}`, 0, 0));
+					if (r.liveTool) container.addChild(new Text(formatToolCall(r.liveTool.name, r.liveTool.args, theme.fg.bind(theme)), 0, 0));
+					if (r.liveToolOutput) container.addChild(new Text(theme.fg("dim", expanded ? r.liveToolOutput : r.liveToolOutput.split("\n").slice(-3).join("\n")), 0, 0));
+					if (r.liveThinking) container.addChild(new Text(theme.fg("muted", "Thinking\n" + (expanded ? r.liveThinking : r.liveThinking.split("\n").slice(-3).join("\n"))), 0, 0));
+					const output = r.liveText || getFinalOutput(r.messages);
+					if (output) container.addChild(new Text(theme.fg("toolOutput", expanded ? output : output.split("\n").slice(-4).join("\n")), 0, 0));
+					container.addChild(new Spacer(1));
+				}
+				return container;
+			}
 			const mdTheme = getMarkdownTheme();
+			const addThinking = (container: Container, r: SingleResult) => {
+				const thinking = r.messages.flatMap(message => message.role === "assistant" ? message.content.filter(part => part.type === "thinking").map(part => part.type === "thinking" ? part.thinking : "") : []).join("\n\n");
+				if (thinking) {
+					container.addChild(new Text(theme.fg("muted", "─── Recent provider thinking ───"), 0, 0));
+					container.addChild(new Text(theme.fg("dim", thinking.slice(-12000)), 0, 0));
+					container.addChild(new Spacer(1));
+				}
+			};
+
 
 			const renderDisplayItems = (items: DisplayItem[], limit?: number) => {
 				const toShow = limit ? items.slice(-limit) : items;
@@ -839,6 +997,7 @@ export default function (pi: ExtensionAPI) {
 					container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
 					container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
 					container.addChild(new Spacer(1));
+					addThinking(container, r);
 					container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
 					if (displayItems.length === 0 && !finalOutput) {
 						container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
@@ -937,6 +1096,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
+						addThinking(container, r);
 						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
@@ -1022,6 +1182,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
+						addThinking(container, r);
 						// Show final output as markdown
 						if (finalOutput) {
 							container.addChild(new Spacer(1));

@@ -16,9 +16,9 @@ isolated context window, a restricted toolset, and zero memory of other runs.
 | agent     | tools                                        | delegates? | sees cwd/context? | notes |
 |-----------|----------------------------------------------|------------|-------------------|-------|
 | scout     | read, grep, find, ls, bash                   | no         | yes               | compressed findings for handoff |
-| planner   | read, grep, find, ls, write                  | no         | yes               | writes plans; domain checklist: distributed/crypto/latency |
-| executor  | read, bash, edit, write, grep, find, ls      | **no**     | yes               | implements plans verbatim; tests + benches |
-| reviewer  | read, grep, find, ls, bash (read-only use)   | no         | yes               | adversarial: races, nonce reuse, hot-path costs |
+| planner   | read, grep, find, ls, write                  | no         | yes               | writes one goal file per mission goal (draft → finalize); domain checklist |
+| executor  | read, bash, edit, write, grep, find, ls, harness_check | **no**     | yes               | implements plans verbatim; tests + benches |
+| reviewer  | read, grep, find, ls, bash, harness_check (status only) | no         | yes               | adversarial: races, nonce reuse, hot-path costs |
 | discuss   | **none**                                     | no         | **no** (noContext + scratch cwd) | pure reasoning; each call is amnesiac |
 
 ## The knobs you asked about
@@ -37,6 +37,12 @@ isolated context window, a restricted toolset, and zero memory of other runs.
    - process isolation → no memory of the executor or of prior discuss calls;
      to hold a thread, re-send "conversation so far" in the task text.
 
+## Skills
+
+Global settings exclude `~/.pi/agent/skills/ethskills/**` and the security pack under `~/.agents/skills/better-auth-best-practices/*/` (46 skills, ~20 KB of system prompt every session). To re-enable one globally, add an exact force-include after the exclusions in `settings.json`, e.g. `"+/Users/rachitsrivastava/.pi/agent/skills/ethskills/gas"`; to re-enable a whole set, delete its `!` line.
+
+Subagent failures caused by 429/402/401/403/quota errors are annotated `PROVIDER UNAVAILABLE` so the main session stops instead of re-dispatching.
+
 ## Agent definitions
 
 - `~/.pi/agent/agents/<name>.md` — role + capability policy (frontmatter: `tools`, `noContext`, `scratch`)
@@ -44,12 +50,12 @@ isolated context window, a restricted toolset, and zero memory of other runs.
 
 ```json
 {
-  "default": "opencode-go/qwen3.8-flash",
-  "scout":    "opencode-go/deepseek-v4.1-flash",
-  "planner":  "opencode-go/glm-5.3",
-  "executor": "opencode-go/kimi-k2.7-code",
+  "default": "openai/gpt-6.1-sol",
+  "scout":    "openai/gpt-6-luna",
+  "planner":  null,
+  "executor": null,
   "reviewer": null,
-  "discuss":  "opencode-go/kimi-k3"
+  "discuss":  null
 }
 ```
 
@@ -66,9 +72,10 @@ Pi uses `~/.pi/agent/` as its standard global config directory (`getAgentDir()`)
 ## Slash commands
 
 - `/discuss <topic>` — isolated reasoning (context must be pasted into the task)
-- `/plan <request>` — scout → planner chain, no code changes
-- `/implement <request>` — scout → planner chain, status update, then executor single dispatch
-- `/build-and-review <request>` — scout → executor → reviewer → executor(fix)
+- `/plan <mission or request>` — plans ONE goal: grill-me interview → planner draft → user picks checkpoints + review modes → planner finalize; no code changes
+- `/implement <request>` — direct executor for clear small tasks; scout/planner for complex or sensitive tasks, then executor
+- `/build-and-review <request>` — optional scout → executor → reviewer → executor only when fixes are needed
+- `/quick <request>` — one executor with a correctness contract and recorded verification
 
 ## Adding a project-scoped agent
 
@@ -76,23 +83,41 @@ Drop a `.md` in `<repo>/.pi/agents/` and pass `agentScope: "both"` when calling
 the tool (interactive confirmation prompts for project-local agents by default —
 repo-controlled prompts can run bash).
 
-## Plan persistence (Obsidian vault)
+## Plan persistence
 
 - Vault: `~/Library/CloudStorage/ProtonDrive-…/Obs` (ProtonDrive E2E-encrypted mount)
-- Convention: `<vault>/Agents/<project>/plans/YYYY-MM-DD-<slug>.md` with frontmatter `project/date/repo/status/supersedes/tags:[agent-plan]`
-- planner (now has `write`): lists Agents/<project>/ first (per-project history), writes plan, **reads it back** (remote-mount stale-write check), falls back to `<repo>/.pi/plans/` with a flagged warning if the mount fails
+- Configure `~/.pi/agent/agents/planner.json`: `{"directory": "~/plans/{project}"}`. Absolute paths, `~`, and paths relative to the dispatched working directory are supported; `{project}` expands to the kebab-case task project. Configuration reloads on every planner dispatch; missing config preserves the original vault default and invalid config fails visibly. Restart or `/reload` after installing the extension change.
+- Layout: `<vault>/Agents/<project>/<mission>/mission.md` (ordered goal list with `pending → planning → planned → executing → done`) and `<vault>/Agents/<project>/<mission>/<NN>-<goal>.md` (one feature/module: micro tasks T1..Tn with verify commands and parallel groups, user-chosen checkpoints C1..Cn each with review `manual|auto|both`). Goals are planned one at a time; later goals may revisit earlier ones (recorded under `## Deferred`) rather than adding speculative generality.
+- `/implement <goal file>` runs it checkpoint by checkpoint: parallel-group tasks run as parallel executors in separate git worktrees (the writer lock is per repository root) and are cherry-picked back in task order; each checkpoint then gets its review (`manual` stops for you, `auto` runs the reviewer, `both` does reviewer then you) before the next segment starts.
+- planner (now has `write`): reads the mission index and earlier goal files first, writes the goal file and mission index, **reads it back** (remote-mount stale-write check), falls back to `<repo>/.pi/plans/` with a flagged warning if storage fails
 - executor: reads the `## Plan File` path as the authoritative plan; main session updates plan `status:` after approval/execution
 - creds-guard: agents may only touch `<vault>/Agents/**`; the rest of the vault (personal notes) is unreadable to every agent; sessions whose cwd is inside the vault are exempt
 - Date rule: planner never guesses today's date — orchestrator passes `Date:` (from `date +%F`)
 
-## Checklist & checkpoint protocol (omp-derived, file-based, zero new tools)
+## Live progress and dispatch speed
 
-- Plans end with `## Checklist`: `- [ ] Sn: <instruction> | verify: <cmd>` lines + `Cn` checkpoint lines (gates: full suite, bench target, rollback-safe commit). Ids S1../C1.. are stable; the vault file IS the todo state.
-- Doctrine (from omp, trimmed): execution spec, ZERO design decisions left to executor; unverified claims marked `unverified - confirm first`; load-bearing assumptions carry pre-decided `if X fails, do Y` fallbacks; banned filler sections (Non-Goals/Alternatives/Risks-prose); every step has concrete verify, not just "tests pass".
-- Executor: resumes at first unchecked box; flips `- [ ]`→`- [x]` with edit only after verify passes; at each passing checkpoint runs the gate, commits `plan(<project>)/<Cn>`, records the hash; NEVER crosses a failed checkpoint; keeps the file truthful on interruption.
-- Reviewer: audits `- [x]` lines against evidence (commit exists, verify passes, invariant holds); box-without-evidence = Critical.
-- Undo = `git reset` to last checkpoint commit (omp's checkpoint/rewind tool, replaced by plain git discipline).
-- Lifecycle: frontmatter `status: proposed -> executing -> executed` (main session flips after chains).
+- `extensions/compact-read.ts` keeps native read execution and replaces its display with a muted `READ` path/range and a short line-count summary. Text contents stay hidden even in expanded results; the agent still receives the native content. Read errors remain visible. Subagent read activity uses the same neutral labels. Native image previews still follow Pi's image-display setting.
+- Subagents stream provider thinking (when exposed), response text, tool activity, and elapsed time while running. The collapsed view shows a short tail; Ctrl+O expands it. Expanded completed results retain a bounded provider-thinking excerpt, separate from final output. UI updates are throttled and a heartbeat keeps elapsed time visible during quiet waits. The footer shows main-response speed; child panels show the latest child-response speed. Rates use provider-reported output tokens divided by message-start-to-end time, including provider wait and reasoning time but excluding tool execution. Most providers report usage only at completion, so streaming shows a placeholder until counts arrive.
+- `agents/runtime.json` reloads on each dispatch. It configures role thinking levels, deadline seconds, maximum completed turns, total reported output tokens, and the update interval. Explicit thinking suffixes in models.json take precedence. Output/turn limits are evaluated at completed assistant messages, so they are soft bounds; deadlines terminate the process group, escalating after five seconds.
+- Small tasks skip unnecessary scout/planner launches; sensitive changes retain planning and independent review. Built-in-only children load only the credential guard plus the sandbox when shell/verification tools are needed; children with custom extension tools retain normal extension discovery. Children skip slash-prompt discovery, and the tool-less discuss role skips skill discovery. Model/provider latency remains outside the harness's control; end-to-end model latency remains unmeasured. In a local three-run extension-loading comparison, median initialization fell from 562 ms (all existing extensions/plugins) to 452 ms (guard + sandbox); this excludes provider calls, full process startup, and session-start hooks.
+
+## Verification and checkpoint protocol
+
+- `harness_check` is registered by the sandbox extension and uses the same sandbox operations as bash. Every executor task defines an immutable correctness contract and required `{id, command, property}` checks before implementation. Use one unique run id per checkpoint.
+- State transitions: `pending → implemented → verified → committed`. `verify` records the registered command, root cwd, optional HARNESS_SEED, exit status, timestamps, HEAD/tree ids, source fingerprints, full output log, and its SHA-256. Failed commands and commands that change source produce failure evidence. `complete` requires every check's latest evidence to match the current checkout and unchanged output logs.
+- Evidence/state lives under `~/.pi/agent/harness/runs/<repo-hash>/<run>/`. Direct file edits and sandboxed shell writes to the harness directory are blocked. Markdown checklists summarize this state; they do not replace it. Status reports evidence freshness for independent review.
+- `checkpoint` requires explicit files and a commit message, rejects preexisting staged work or other changed files, verifies evidence, then stages and commits that scope. Hook edits and a dirty checkout after commit prevent recording a committed checkpoint. It does not discard changes or reset the repository.
+- The dispatcher rejects executor success without a successful complete/checkpoint event, and invalidates that completion on subsequent writes/edits/bash calls. All checkpoints observed in that dispatch must complete. Later checkpoints must include regression gates covering the combined result.
+- A cross-process writer lock prevents simultaneous mutating subagent dispatches in the same checkout. Read-only scout/reviewer calls can run concurrently. It does not prevent user edits, direct main-session edits, or writers in other checkouts; fingerprints detect changes between verification boundaries. Crashed locks fail visibly and require inspection before manual removal.
+- Fingerprints cover tracked/nonignored untracked files, deletion, permissions, in-repository file symlinks and their contents, and initialized submodule checkouts. Ignored files, installed dependencies, external services, and toolchain state are outside this coverage; pin and describe them in the contract. Uninitialized submodules and unsupported/external symlinks fail closed. Keep plan metadata outside the checkout or ignored if checkpoint commits are required.
+- Distributed plans declare consistency/failure/recovery assumptions and safety/liveness properties. Crypto plans declare the threat model, established primitive/library, nonce/key lifecycle, and authentication/encoding boundaries. Verification is selected from applicable failure injection, consistency checking, model checking, vectors, rejection tests, and interoperability checks. New cryptographic constructions require specialist human review.
+- Lifecycle: plan frontmatter remains `proposed → executing → executed`; final acceptance requires recorded evidence and resolution of reviewer findings.
+
+## Regression checks and domain evaluations
+
+Run `node agent/tests/typecheck.mjs` (requires the installed TypeScript compiler), `node agent/tests/harness.test.mjs`, `node agent/tests/verification-check.mjs`, `node agent/tests/subagent-progress-check.mjs`, and `node agent/tests/domain-eval.mjs`. The additional checks exercise source freshness, failure evidence, scoped staging, output integrity, live rendering, dispatch limits, and executor completion rejection.
+
+`domain-eval.mjs` distinguishes deliberately broken and reference implementations of lost acknowledgement recovery, duplicate application, nonce reuse after restart, and malformed-signature rejection. `--agent` runs the configured executor against broken/clean pairs and records independent test results, unnecessary clean-code edits, evidence completion, elapsed time, output tokens, and reported cost under `agent/harness/evals/`; `--case <id>` selects a pair. Live evaluation incurs provider usage and was not run as part of offline validation. These bounded fixtures measure a few engineering behaviors, not protocol security or full distributed correctness.
 
 ## Sandbox / isolation layers (installed)
 
@@ -106,11 +131,11 @@ repo-controlled prompts can run bash).
 
 ## Modes (plan / execute / discuss)
 
-- Extension: `~/.pi/agent/extensions/modes/index.ts` — three-position mode switch for the MAIN session; `/mode discuss|plan|execute`, bare `/mode` = status, Ctrl+Alt+M cycles. **Default on new sessions: DISCUSS.**
-- Each mode = tool-activation filtering + `tool_call` gates (defense-in-depth) + a `[MODE: ...]` instruction injected every run:
-  - **discuss**: read-only repo inspection (`read`/`grep`/`find`/`ls` + read-only code intelligence); `bash`/`edit`/`write`/`pi_lens_activate_tools` blocked; web tools, advisor, and subagent dispatch restricted to the `discuss` agent
-  - **plan**: read-only; edit/write off; bash allowlisted to read-only commands (`find -delete`/`-exec`, redirects, rm/mv/npm/git-writes all rejected); subagent dispatch restricted to scout/planner/reviewer/discuss (executor blocked)
-  - **execute**: everything restored; checklist/checkpoint doctrine in the injected prompt
+- Extension: `~/.pi/agent/extensions/modes/index.ts` — three-position mode switch for the MAIN session; `/mode discuss|plan|execute`, bare `/mode` = status, Tab cycles (Ctrl+Alt+M also works). The bottom status bar shows `MODE: DISCUSS`, `MODE: PLAN`, or `MODE: EXECUTE` from startup and updates immediately on switches. Autocomplete uses Ctrl+Space, configured in `agent/keybindings.json`. **Default on new sessions: DISCUSS.**
+- Each mode = tool allowlists + `tool_call` gates (defense-in-depth) + a `harness_mode` system-prompt section. The section is byte-stable while the mode is unchanged, so the provider prompt cache survives across turns (do not reintroduce per-turn messages or `context` hooks that rewrite history). Every mode carries the same scope rules: do exactly what was asked, smallest change, no unrequested files/migrations/plan docs, stop on provider failures.
+  - **discuss**: read-only repo inspection; `bash`/`edit`/`write`/`pi_lens_activate_tools` blocked; subagent dispatch restricted to `discuss`
+  - **plan**: read-only; bash allowlisted to read-only commands; executor blocked; plans are inline unless the user asks for a persisted one or runs `/plan`
+  - **execute**: full tools; work is done directly. Subagents, `harness_check` contracts, plan files and the advisor are used only via `/implement`, `/build-and-review`, `/plan`, `/quick` or an explicit request.
 - Subagent children are exempt from the main mode switch (`PI_SUBAGENT_CHILD=1`), but scout/reviewer bash calls use the shared read-only policy (`PI_SUBAGENT_READ_ONLY=1`, inherited by descendants). Restricted main modes only dispatch personal agents, preventing project definitions from overriding allowed roles.
 - Regression suite: `node agent/tests/harness.test.mjs` from `~/.pi` using Node >=22.19.0 (Pi 1.0.1's runtime requirement). Tests cover command policy, canonical paths, mode injection/gates, zero-tool dispatch, cancellation escalation, sandbox policy, and extension loading. Restart Pi sessions after changing extensions.
   - The full suite aborts inside a sandboxed Pi shell (`EPERM` lstat on `agent/auth.json` during the creds-guard symlink check). These slices run safely from any shell: `agent/tests/modes-check.mjs` (mode activation/gates/injection), `agent/tests/advisor-config-check.mjs` (advisor config), `agent/tests/advisor-session-header.mjs` (Advisor session-id patch), `agent/tests/advisor-patch-guard.mjs` (patch self-healing guard).
@@ -120,10 +145,11 @@ repo-controlled prompts can run bash).
 `advisor.json` pairs a fast Executor with a stronger Advisor; the same-model guard skips calls when both match, so the two must differ.
 
 ```json
-{ "executor": "opencode-go/qwen3.8-flash", "advisor": "opencode-go/kimi-k3" }
+{ "executor": "openai/gpt-6.1-sol", "advisor": "openai/gpt-6-astra",
+  "advisorPlanGate": false, "advisorCompletionGate": false, "advisorFailureGate": true, "advisorMaxCallsPerSession": 4 }
 ```
 
-Executor = the session default (cheap, high request allowance); Advisor = `kimi-k3`, the strongest reasoning model on the OpenCode Go catalog (490 requests/month allowance — the Advisor only sees the conversation, so it is rarely the bottleneck). Edit the file or use `/advisor-models` (pick Executor, Advisor, optional fallback) and `/advisor-settings` (plan/failure/completion gates, git context, effort, whitelist). Unknown keys are preserved but warned about; only keys from the plugin's schema are valid (e.g. `advisor`, `advisorFallbackModel`, `advisorEffort`, `alwaysOn`). Requires `packages: ["npm:pi-advisor-flow"]` in `settings.json` and a session restart. Validate an edit with `node agent/tests/advisor-config-check.mjs` (schema-validates `advisor.json` and asserts advisor ≠ executor).
+Executor = the session default; Advisor = `gpt-6-astra`. Plan and completion gates are off (they added 50-80 s per answer); only repeated failures trigger an automatic review, capped at 4 calls per session. All roles moved off `opencode-go` on 2026-10-06 after its quota was exhausted (429/402 failed most subagent and advisor calls). Edit the file or use `/advisor-models` (pick Executor, Advisor, optional fallback) and `/advisor-settings` (plan/failure/completion gates, git context, effort, whitelist). Unknown keys are preserved but warned about; only keys from the plugin's schema are valid (e.g. `advisor`, `advisorFallbackModel`, `advisorEffort`, `alwaysOn`). Requires `packages: ["npm:pi-advisor-flow"]` in `settings.json` and a session restart. Validate an edit with `node agent/tests/advisor-config-check.mjs` (schema-validates `advisor.json` and asserts advisor ≠ executor).
 
 - **Local patch (required for OpenCode advisors).** pi-advisor-flow 0.11.1 builds Advisor stream options as `{reasoning, signal}` and never passes a session id, but pi-ai derives `x-opencode-session` only from `options.sessionId` (`pi-ai/dist/providers/opencode-headers.js`). OpenCode Go now rejects requests without it (`400 {"type":"MissingSessionID"}`), so **every consultation against an `opencode-go/*` Advisor failed** while the Executor was fine — Pi's agent loop supplies `sessionId` (`core/agent-session.js`) and the Advisor runs outside that loop. Three layers keep the fix in place:
   1. `agent/patches/advisor-session-header.mjs` threads `ctx.sessionManager.getSessionId()` through `ResolvedConfiguredModel` into both stream paths. Literal anchors from 0.11.1, idempotent, exits non-zero with `UPSTREAM CHANGED` if an anchor stops matching exactly once, and accepts a package dir so tests can run it against a pristine tarball.
@@ -137,3 +163,11 @@ Executor = the session default (cheap, high request allowance); Advisor = `kimi-
 `amazon-bedrock` env credentials (STS) are currently invalid
 (`UnrecognizedClientException`). `opencode-go` and `google` providers are ready.
 Refresh the AWS creds or select a working model before interactive use.
+
+## Executor Lens and debugger support
+
+Executor dispatches now load Lens and allow its diagnostics, symbol/body reads, LSP navigation, AST queries, and structural replacement tools. Other roles keep their existing toolsets. Executor launches load only the guard, sandbox/debugger, and Lens; web and advisor plugins remain excluded. Lens adds startup work compared with the former guard-only launch.
+
+The sandbox extension registers `debug`: a fresh LLDB batch launching a binary inside the workspace, with optional `args`, `breakpoints` (`file:line`), `commands`, and `timeoutSeconds` (default 60, maximum 300). Build with debug symbols; use commands such as `run`, `frame variable`, `next`, and `thread backtrace all`. Custom commands replace the default command sequence. LLDB init files are disabled. Batches have no persistent session and no supported existing-process attach workflow. Cancellation and deadlines use the existing bash operations. macOS Seatbelt prevents LLDB process control: launch `pi --debug-unsandboxed` to explicitly allow only debugger calls outside the OS sandbox. The opt-in is inherited by executor children; ordinary bash remains sandboxed. Without this flag, macOS debug calls fail with an actionable message. Unsandboxed LLDB and its target have the user’s filesystem and network access; the file-tool credential guard is not an OS boundary for these processes. Linux uses sandboxed operations unless explicitly opted out. macOS may also require Developer Tools permission.
+
+Debug is blocked in discuss/plan modes and read-only subagents. Executor debug, AST replacement, and all LSP navigation calls invalidate completion, conservatively including read-only LSP operations. Run verification and complete again afterwards. Debug output and Lens diagnostics do not count as registered test evidence.

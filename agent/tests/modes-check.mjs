@@ -13,14 +13,42 @@ Object.assign(alias, Object.fromEntries(["pi-coding-agent", "pi-agent-core", "pi
 alias.typebox = require.resolve("typebox");
 const jiti = createJiti(import.meta.url, { alias, fsCache: false, moduleCache: false });
 
-const hooks = new Map(); const commands = new Map();
-const ALL = ["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "web_search", "lens_diagnostics", "pi_lens_activate_tools", "ast_grep_replace", "lens_diagnostic_mark", "symbol_search"];
+const hooks = new Map(); const commands = new Map(); const shortcuts = new Map();
+const ALL = ["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "web_search", "lens_diagnostics", "pi_lens_activate_tools", "ast_grep_replace", "lens_diagnostic_mark", "symbol_search", "debug"];
 let active = [...ALL];
 const modes = await jiti.import(path.join(root, "extensions/modes/index.ts"));
-modes.default({ on: (n, fn) => hooks.set(n, fn), registerCommand: (n, def) => commands.set(n, def), registerShortcut() {}, getActiveTools: () => active, setActiveTools: names => { active = names; } });
+modes.default({ on: (n, fn) => hooks.set(n, fn), registerCommand: (n, def) => commands.set(n, def), registerShortcut: (key, def) => shortcuts.set(key, def), getActiveTools: () => active, setActiveTools: names => { active = names; } });
 const call = (toolName, input = {}) => hooks.get("tool_call")({ toolName, input });
 let checks = 0;
 const check = (cond, label) => { assert.ok(cond, "FAIL: " + label); checks++; console.log("ok   " + label); };
+
+const statuses = new Map();
+const ctx = { cwd: path.dirname(root), hasUI: true, ui: { notify() {}, setStatus: (key, text) => statuses.set(key, text), theme: { fg: (_color, text) => text } } };
+await hooks.get("session_start")({}, ctx);
+check((await call("debug", { program: "target/debug/app" })).block, "discuss blocks debugger execution");
+check(statuses.get("harness-mode") === "MODE: DISCUSS · Tab", "footer displays default mode before the first prompt");
+check(statuses.get("harness-speed") === "Speed: — tok/s", "footer shows speed before usage is available");
+await hooks.get("before_provider_request")({ payload: {} }, ctx);
+check(statuses.get("harness-speed") === "Speed: TTFT … · — tok/s", "footer waits for the first token after the request is sent");
+await new Promise(r => setTimeout(r, 5));
+await hooks.get("message_update")({ message: { role: "assistant", usage: { output: 0 } }, assistantMessageEvent: { type: "text_delta" } }, ctx);
+check(/^Speed: TTFT \d+\.\ds · streaming…$/.test(statuses.get("harness-speed")), "footer shows TTFT and streaming while token usage is pending");
+await new Promise(r => setTimeout(r, 5));
+await hooks.get("message_end")({ message: { role: "assistant", usage: { output: 100 } } }, ctx);
+check(/^Speed: TTFT \d+\.\ds · \d+\.\d tok\/s$/.test(statuses.get("harness-speed")), "completed response displays TTFT and generation speed");
+const { TokenSpeed } = await jiti.import(path.join(root, "extensions/lib/token-speed.ts"));
+const speed = new TokenSpeed();
+speed.start(1000);
+speed.firstToken(3000);
+check(speed.ttft === 2, "TTFT is request-to-first-token time");
+check(speed.update(101, 5000) === 50, "generation speed excludes prompt processing");
+speed.firstToken(4000);
+check(speed.ttft === 2, "later deltas do not move the first-token time");
+speed.start(4000);
+check(speed.update(100, 5000) === undefined, "no rate before the first token");
+speed.firstToken(4000);
+check(speed.update(undefined, 5000) === undefined, "missing usage does not invent a rate");
+check(speed.update(100, 4000) === undefined, "zero duration does not produce an infinite rate");
 
 await hooks.get("before_agent_start")({});
 check(active.includes("read") && active.includes("grep") && active.includes("ls") && active.includes("find") && active.includes("lens_diagnostics") && active.includes("symbol_search"), "discuss keeps read-only repo + code-intel tools");
@@ -30,15 +58,18 @@ check((await call("edit", {})).block === true, "gate blocks edit in discuss");
 check((await call("write", {})).block === true, "gate blocks write in discuss");
 check((await call("read", { path: "HARNESS.md" })) === undefined, "gate allows read in discuss");
 check((await call("find", { pattern: "x" })) === undefined, "gate allows find in discuss");
+check((await call("new_plugin_write", {})).block === true, "unknown plugin tools fail closed in discuss");
 check((await call("subagent", { agent: "discuss" })) === undefined, "discuss dispatches the discuss agent");
 check((await call("subagent", { agent: "scout" })).block === true, "discuss blocks scout");
-const msg = (await hooks.get("before_agent_start")({})).message;
-check(msg.content.includes("[MODE: DISCUSS]") && msg.content.includes("READ") && msg.content.includes("no bash"), "discuss instructions describe read-only repo access");
-const filtered = await hooks.get("context")({ messages: [{ role: "custom", customType: "harness-modes", content: "stale" }, { role: "user", content: "hi" }, { role: "custom", ...msg }] });
-check(filtered.messages.filter(m => m.customType === "harness-modes").length === 1, "only the freshest mode instruction survives");
+const promptEvent = () => ({ systemPromptOptions: { cwd: "/", sections: { other: "kept" } } });
+const first = promptEvent(); await hooks.get("before_agent_start")(first);
+check(first.systemPromptOptions.sections.other === "kept" && first.systemPromptOptions.sections.harness_mode.startsWith("[MODE: DISCUSS]") && first.systemPromptOptions.sections.harness_mode.includes("cannot run commands"), "discuss instructions are a system-prompt section");
+const again = promptEvent(); await hooks.get("before_agent_start")(again);
+check(again.systemPromptOptions.sections.harness_mode === first.systemPromptOptions.sections.harness_mode, "mode section is byte-stable within a mode (prompt cache)");
+check(!hooks.has("context"), "no context hook rewrites history (prompt cache)");
 
-const ctx = { cwd: path.dirname(root), ui: { notify() {} } };
 await commands.get("mode").handler("plan", ctx);
+check(statuses.get("harness-mode") === "MODE: PLAN · Tab", "mode command updates the footer");
 check(active.includes("bash") && active.includes("read") && !active.includes("edit") && !active.includes("write"), "plan keeps read+bash, drops edit/write");
 for (const tool of ["ast_grep_replace", "lens_diagnostic_mark", "pi_lens_activate_tools"]) {
   check(!active.includes(tool), `plan removes ${tool}`);
@@ -47,6 +78,9 @@ for (const tool of ["ast_grep_replace", "lens_diagnostic_mark", "pi_lens_activat
 check(active.includes("lens_diagnostics") && active.includes("symbol_search"), "plan keeps read-only code intelligence");
 check((await call("bash", { command: "sort -o result input" })).block === true, "plan blocks mutating bash");
 check((await call("bash", { command: "ls" })) === undefined, "plan allows read-only bash");
+check((await call("new_plugin_write", {})).block === true, "unknown plugin tools fail closed in plan");
+check((await call("lsp_navigation", { operation: "references" })) === undefined, "read-only LSP navigation stays available");
+for (const operation of ["rename", "rename_file", "executeCommand", "codeAction"]) check((await call("lsp_navigation", { operation })).block === true, `mutating LSP ${operation} blocked`);
 check((await call("subagent", { agent: "executor" })).block === true, "plan blocks executor");
 await commands.get("mode").handler("execute", ctx);
 check(active.length === ALL.length, "execute restores the full tool set");
@@ -54,4 +88,15 @@ for (const tool of ["ast_grep_replace", "lens_diagnostic_mark", "pi_lens_activat
   check((await call(tool, { apply: true })) === undefined, `execute allows ${tool}`);
 }
 check((await call("bash", { command: "git commit -m x" })) === undefined, "execute allows mutating bash");
+check(shortcuts.has("tab"), "Tab is registered for mode cycling");
+await shortcuts.get("tab").handler(ctx);
+check(statuses.get("harness-mode") === "MODE: DISCUSS · Tab", "Tab updates the footer to discuss");
+check(!active.includes("write") && !active.includes("bash"), "Tab cycles execute to discuss");
+await shortcuts.get("tab").handler(ctx);
+check(statuses.get("harness-mode") === "MODE: PLAN · Tab", "Tab updates the footer to plan");
+check(active.includes("bash") && !active.includes("write"), "Tab cycles discuss to plan");
+await shortcuts.get("tab").handler(ctx);
+check(statuses.get("harness-mode") === "MODE: EXECUTE · Tab", "Tab updates the footer to execute");
+check(active.length === ALL.length, "Tab cycles plan to execute");
+check(JSON.parse(fs.readFileSync(path.join(root, "keybindings.json"), "utf8"))["tui.input.tab"] === "ctrl+space", "autocomplete moves to Ctrl+Space");
 console.log(`\nPassed ${checks} mode checks.`);

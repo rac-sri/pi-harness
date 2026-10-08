@@ -45,6 +45,7 @@
       "~/.pi/agent/settings.json",
       "~/.pi/agent/extensions",
       "~/.pi/agent/agents",
+      "~/.pi/agent/harness",
       "~/Library"
     ]
   }

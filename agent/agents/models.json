@@ -1,9 +1,10 @@
 {
   "_comment": "Authoritative model selection for managed Pi launches and subagents. Main launches use default unless an explicit CLI model/provider/models is supplied. Subagents use their role entry; null or omitted entries use default, never the active session or frontmatter model. Read fresh on every launch/dispatch. Value format: provider/model[:thinking]. Underscore-prefixed keys are comments.",
-  "default": "opencode-go/qwen3.8-flash",
-  "scout": "opencode-go/deepseek-v4.1-flash",
-  "planner": "opencode-go/glm-5.3",
-  "executor": "opencode-go/kimi-k2.7-code",
+  "default": "openai/gpt-6.1-sol",
+  "scout": "openai/gpt-6-luna",
+  "planner": null,
+  "executor": null,
   "reviewer": null,
-  "discuss": "opencode-go/kimi-k3"
+  "discuss": "lmstudio/qwen3.8-27b-splash",
+  "_comment_provider": "All roles on openai: opencode-go quota was exhausted (429 GoUsageLimitError / 402) on 2026-10-06, failing most subagent calls."
 }

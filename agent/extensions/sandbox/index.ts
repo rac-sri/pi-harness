@@ -46,8 +46,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type BashOperations, CONFIG_DIR_NAME, createBashTool, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { type BashOperations, CONFIG_DIR_NAME, createBashTool, createLocalBashOperations, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { SECRET_PATHS, VAULT_ROOT } from "../creds-guard.ts";
+import { registerVerification } from "../lib/verification.ts";
+import { registerDebugger } from "../lib/debugger.ts";
 
 interface SandboxConfig extends SandboxRuntimeConfig {
 	enabled?: boolean;
@@ -234,12 +236,29 @@ export default function (pi: ExtensionAPI) {
 		default: false,
 	});
 
+	pi.registerFlag("debug-unsandboxed", {
+		description: "Allow LLDB debugger calls outside the OS sandbox (bash remains sandboxed); inherited by executor children",
+		type: "boolean",
+		default: false,
+	});
+	let debugUnsandboxed = false;
 	const localCwd = process.cwd();
 	const localBash = createBashTool(localCwd);
 
 	let sandboxEnabled = false;
 	let sandboxInitialized = false;
 	let explicitlyDisabled = false;
+	const toolOperations = () => {
+		if (explicitlyDisabled) return createLocalBashOperations();
+		if (!sandboxEnabled || !sandboxInitialized) throw new Error("Sandbox unavailable: verification blocked");
+		return createSandboxedBashOps();
+	};
+	registerVerification(pi, toolOperations);
+	registerDebugger(pi, () => {
+		if (debugUnsandboxed || explicitlyDisabled) return createLocalBashOperations();
+		if (process.platform === "darwin") throw new Error("macOS Seatbelt blocks LLDB process control. Restart Pi with --debug-unsandboxed to explicitly allow debugger calls outside the OS sandbox; bash remains sandboxed.");
+		return toolOperations();
+	});
 
 	pi.registerTool({
 		...localBash,
@@ -266,6 +285,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		sandboxEnabled = false;
 		explicitlyDisabled = false;
+		debugUnsandboxed = pi.getFlag("debug-unsandboxed") === true || process.env.PI_SUBAGENT_CHILD === "1" && process.env.PI_DEBUG_UNSANDBOXED === "1";
+		if (process.env.PI_SUBAGENT_CHILD !== "1") {
+			if (debugUnsandboxed) process.env.PI_DEBUG_UNSANDBOXED = "1";
+			else delete process.env.PI_DEBUG_UNSANDBOXED;
+		}
+		if (debugUnsandboxed) ctx.ui.notify("LLDB debugger calls run outside the OS sandbox; bash keeps its configured sandbox.", "warning");
 		const noSandbox = pi.getFlag("no-sandbox") as boolean;
 
 		if (noSandbox) {

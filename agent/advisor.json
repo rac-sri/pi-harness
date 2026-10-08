@@ -1,4 +1,8 @@
 {
-  "executor": "opencode-go/qwen3.8-flash",
-  "advisor": "opencode-go/kimi-k3"
+  "executor": "lmstudio/qwen3.8-27b-splash",
+  "advisor": "openai/gpt-6-astra",
+  "advisorPlanGate": false,
+  "advisorCompletionGate": false,
+  "advisorFailureGate": true,
+  "advisorMaxCallsPerSession": 4
 }

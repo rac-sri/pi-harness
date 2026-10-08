@@ -1,0 +1,13 @@
+{
+  "timeoutSeconds": 600,
+  "maxTurns": 40,
+  "maxOutputTokens": 60000,
+  "updateIntervalMs": 150,
+  "thinking": {
+    "scout": "low",
+    "planner": "medium",
+    "executor": "medium",
+    "reviewer": "medium",
+    "discuss": "medium"
+  }
+}

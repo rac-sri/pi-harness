@@ -2,15 +2,16 @@
  * modes: three-position harness mode switch for the main session.
  *
  *   /mode discuss   (DEFAULT)  reasoning + read-only repo inspection; no bash, no edits, only the "discuss" subagent
- *   /mode plan      read-only exploration; orchestrates scout/planner; vault plan files
- *   /mode execute   full tools; works plan checklists with verify gates + checkpoint commits
+ *   /mode plan      read-only exploration; inline plans (scout/planner on request)
+ *   /mode execute   full tools; direct edits (subagent workflows via slash commands)
  *
  * Enforcement = tool activation (schema-level) + tool_call gates (defense-in-depth).
- * Ctrl+Alt+M cycles discuss -> plan -> execute -> discuss.
+ * Tab cycles discuss -> plan -> execute -> discuss (Ctrl+Alt+M also works).
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { isReadOnlyCommand } from "../lib/read-only.ts";
+import { TokenSpeed } from "../lib/token-speed.ts";
 
 type Mode = "discuss" | "plan" | "execute";
 
@@ -21,28 +22,29 @@ const CONTEXT_TAG: Record<Mode, string> = {
 	execute: "[MODE: EXECUTE]",
 };
 
+// Shared by every mode: the user's request is the goal; process serves it.
+const SCOPE_RULES = `- Do exactly what the user asked, at the size they asked for. A question gets an answer; a diagram gets a diagram shown inline; "revert" means restore the files with git.
+- Prefer the smallest change that works. Do not add files, migrations, tables, plan documents, scripts, or abstractions the user did not ask for. When a bigger change seems needed, say so in one line and ask first.
+- Re-read the user's latest message before each action and check that the action serves it.
+- If a subagent or advisor call fails (429/402/quota/timeout), do not retry or route around it: do the work directly if small, otherwise tell the user what failed and stop.`;
+
 const DISCUSS_MODE_INSTRUCTIONS = `${CONTEXT_TAG.discuss}
-You are in DISCUSS mode (the default): you may READ the working tree, but you cannot run commands or change files.
-- read/grep/find/ls and the read-only code-intelligence tools are available. Ground every claim about this repo in what you actually read, and cite the path (with line) you read it from.
-- Reason about architecture, protocols, cryptography, concurrency, latency, tradeoffs.
-- You may dispatch the "discuss" subagent (isolated, tool-less) for deeper brainstorming, and use web tools for research. It sees nothing: paste any file excerpts it needs into the task text.
-- NEVER claim knowledge of files, code, or session history you were not given — read them instead.
-- Reading is the ceiling here: no bash, no edits. When the user wants code changes or command execution (builds, tests, git), stop and tell them to run /mode plan (read-only analysis + the scout/planner fleet) or /mode execute (code work). Do not apologize for the boundary; reasoning first is a feature.`;
+You are in DISCUSS mode: read the working tree and reason about it; you cannot run commands or change files.
+- Ground claims about this repo in files you read and cite path:line.
+- When the user wants changes or command execution, tell them to switch with /mode plan or /mode execute.
+${SCOPE_RULES}`;
 
 const PLAN_MODE_INSTRUCTIONS = `${CONTEXT_TAG.plan}
-You are in PLAN mode: read-only against the working tree.
-- edit/write are disabled; bash is limited to read-only commands (no builds, no installs, no git state changes).
-- Orchestrate the planning fleet: scout and planner subagents (single/chain/parallel). The executor subagent is BLOCKED in this mode - execution belongs to /mode execute.
-- Plans live in the Obsidian vault (Agents/<project>/plans/) via the planner; you relay context and the Plan File path.
-- Determine <repo>, <project>, and today's Date (bash: date +%F) and prefix planner/executor tasks with "Project: ... Repo: ... Date: ...".
-- When the plan is approved by the user, tell them to run /mode execute, then chain executor on the plan file checklist.`;
+You are in PLAN mode: read-only (edit/write disabled; bash limited to read-only commands; executor subagent blocked).
+- Answer planning requests inline in the chat by default. Dispatch the scout/planner subagents or write a persisted plan file only when the user asks for one or runs /plan.
+- When the user approves a plan, tell them to switch with /mode execute.
+${SCOPE_RULES}`;
 
 const EXECUTE_MODE_INSTRUCTIONS = `${CONTEXT_TAG.execute}
 You are in EXECUTE mode: full tool access.
-- Work plan checklists with the executor doctrine: resume at the first unchecked box, a step's verify: command must pass before flipping - [ ] to - [x], checkpoint gates (Cn) require git add -A && git commit -m "plan(<project>)/<Cn>: ...", never cross a failed gate.
-- Prefer dispatching the executor subagent for well-specified plans (isolated context); do hands-on work yourself for small edits or when iterating with the user.
-- After chains: report the Plan File path, checklist state, and checkpoint commit hashes; update frontmatter status: proposed -> executing -> executed.
-- Reviewer passes and advisor gates remain available. If the plan turns out wrong, say so - switch /mode plan, don't freelance.`;
+- Do the work directly with read/edit/write/bash, then run the relevant build or tests and report the results.
+- Use subagents, harness_check contracts, plan files, and the advisor only when the user invokes /implement, /build-and-review, /plan, or /quick, or asks for them explicitly.
+${SCOPE_RULES}`;
 
 // ---------------------------------------------------------------------------
 // bash read-only allowlist (plan mode)
@@ -56,8 +58,8 @@ let mode: Mode = DEFAULT_MODE;
 let saved: string[] | undefined; // full active set captured when restricting
 
 // Read-only tools stay available in DISCUSS: inspect the working tree, never run or change it.
-const PLAN_DISABLED = new Set(["edit", "write", "lens_diagnostic_mark", "ast_grep_replace", "pi_lens_activate_tools"]);
-const DISCUSS_DISABLED = new Set([...PLAN_DISABLED, "bash"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "subagent", "ask_advisor", "web_search", "fetch_content", "get_search_content", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
+const READ_ONLY_LSP_OPERATIONS = new Set(["definition", "typeDefinition", "declaration", "references", "hover", "signatureHelp", "documentSymbol", "findSymbol", "workspaceSymbol", "implementation", "prepareCallHierarchy", "incomingCalls", "outgoingCalls", "workspaceDiagnostics", "capabilities"]);
 
 export default function (pi: ExtensionAPI) {
 	// Subagent children run under their agent .md capability policy, not session
@@ -75,31 +77,66 @@ export default function (pi: ExtensionAPI) {
 		}
 		saved ??= active;
 		const base = saved;
-		if (mode === "discuss") pi.setActiveTools(base.filter((t) => !DISCUSS_DISABLED.has(t)));
-		else pi.setActiveTools(base.filter((t) => !PLAN_DISABLED.has(t)));
+		pi.setActiveTools(base.filter(t => READ_ONLY_TOOLS.has(t) || mode === "plan" && t === "bash"));
 	};
+	const updateStatus = (ctx?: ExtensionContext) => {
+		if (!ctx?.hasUI) return;
+		const color = mode === "discuss" ? "accent" : mode === "plan" ? "warning" : "success";
+		ctx.ui.setStatus("harness-mode", ctx.ui.theme.fg(color, `MODE: ${mode.toUpperCase()}`) + ctx.ui.theme.fg("dim", " · Tab"));
+	};
+	const speed = new TokenSpeed();
+	const updateSpeed = (ctx: ExtensionContext, streaming = false) => {
+		if (!ctx.hasUI) return;
+		const ttft = speed.ttft === undefined ? streaming ? "TTFT …" : undefined : `TTFT ${speed.ttft.toFixed(1)}s`;
+		const rate = speed.rate === undefined ? streaming && speed.ttft !== undefined ? "streaming…" : "— tok/s" : `${speed.rate.toFixed(1)} tok/s`;
+		ctx.ui.setStatus("harness-speed", ctx.ui.theme.fg("dim", `Speed: ${ttft ? `${ttft} · ` : ""}${rate}`));
+	};
+	pi.on("session_start", async (_event, ctx) => {
+		apply(pi.getActiveTools());
+		updateStatus(ctx);
+		speed.reset();
+		updateSpeed(ctx);
+	});
+	// The clock starts when the request is sent: message_start only fires once
+	// response headers arrive, which can precede prompt processing.
+	pi.on("before_provider_request", async (_event, ctx) => {
+		speed.start();
+		updateSpeed(ctx, true);
+		return undefined;
+	});
+	pi.on("message_update", async (event, ctx) => {
+		if (event.message.role !== "assistant") return;
+		if (event.assistantMessageEvent?.type?.endsWith("_delta")) speed.firstToken();
+		speed.update(event.message.usage?.output);
+		updateSpeed(ctx, true);
+	});
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message.role !== "assistant") return;
+		speed.update(event.message.usage?.output);
+		updateSpeed(ctx);
+	});
 
 	const setMode = (next: Mode, ctx: ExtensionContext) => {
 		if (next === mode) {
+			updateStatus(ctx);
 			ctx.ui.notify(`Already in ${next} mode.`, "info");
 			return;
 		}
 		mode = next;
 		apply(pi.getActiveTools());
-		ctx.ui.notify(`${CONTEXT_TAG[next]} active. ${next === "discuss" ? "Read-only repo access; no bash, no edits." : next === "plan" ? "Read-only; scout/planner only." : "Full access; checklists + checkpoint commits."}`, "info");
+		updateStatus(ctx);
+		ctx.ui.notify(`${CONTEXT_TAG[next]} active. ${next === "discuss" ? "Read-only repo access; no bash, no edits." : next === "plan" ? "Read-only; scout/planner only." : "Full access; direct edits."}`, "info");
 	};
 
 	// Re-assert activation on every run so ordering vs other extensions can't drift.
-	pi.on("before_agent_start", async () => {
+	// Mode instructions are a system-prompt section: it stays byte-identical while the
+	// mode is unchanged, so the provider prompt cache survives across turns.
+	pi.on("before_agent_start", async (event, ctx) => {
 		apply(pi.getActiveTools());
-		const content = mode === "discuss" ? DISCUSS_MODE_INSTRUCTIONS : mode === "plan" ? PLAN_MODE_INSTRUCTIONS : EXECUTE_MODE_INSTRUCTIONS;
-		return { message: { customType: "harness-modes", content, details: { mode } } };
-	});
-
-	// Drop injected instructions for modes no longer active.
-	pi.on("context", async (event) => {
-		const latest = event.messages.findLastIndex(m => (m as { customType?: string }).customType === "harness-modes");
-		return { messages: event.messages.filter((m, i) => (m as { customType?: string }).customType !== "harness-modes" || i === latest) };
+		updateStatus(ctx);
+		const options = event?.systemPromptOptions;
+		if (options) options.sections = { ...options.sections, harness_mode: mode === "discuss" ? DISCUSS_MODE_INSTRUCTIONS : mode === "plan" ? PLAN_MODE_INSTRUCTIONS : EXECUTE_MODE_INSTRUCTIONS };
+		return undefined;
 	});
 
 	// Defense-in-depth: gate tools that survived the activation race.
@@ -107,15 +144,10 @@ export default function (pi: ExtensionAPI) {
 	// discuss mode — inspecting the working tree is allowed; running and editing are not.
 	pi.on("tool_call", async (event) => {
 		if (mode === "execute") return undefined;
-
-		if (mode === "discuss" && DISCUSS_DISABLED.has(event.toolName)) {
-			return { block: true, reason: `DISCUSS mode: ${event.toolName} is disabled. Switch with /mode plan or /mode execute.` };
-		}
+		if (!READ_ONLY_TOOLS.has(event.toolName) && !(mode === "plan" && event.toolName === "bash")) return { block: true, reason: `${CONTEXT_TAG[mode]}: tool is not in the read-only allowlist. Use /mode execute for writes or verification.` };
+		if (event.toolName === "lsp_navigation" && !READ_ONLY_LSP_OPERATIONS.has(String(event.input.operation ?? ""))) return { block: true, reason: `${CONTEXT_TAG[mode]}: this LSP operation can modify files or execute commands.` };
 
 		if (mode === "plan") {
-			if (PLAN_DISABLED.has(event.toolName)) {
-				return { block: true, reason: `PLAN mode: ${event.toolName} is disabled. Use /mode execute to change files.` };
-			}
 			if (event.toolName === "bash" && !isReadOnlyCommand(String(event.input.command ?? ""))) {
 				return { block: true, reason: `PLAN mode: only read-only commands allowed. Blocked: ${String(event.input.command ?? "").slice(0, 80)}` };
 			}
@@ -141,14 +173,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("mode", {
-		description: "Harness mode: discuss (default, no repo) | plan (read-only) | execute (full)",
+		description: "Harness mode: discuss (default, read-only repo) | plan (read-only) | execute (full)",
 		getArgumentCompletions: (prefix) => ["discuss", "plan", "execute"]
 			.filter((m) => m.startsWith(prefix.toLowerCase()))
 			.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "").trim().toLowerCase();
 			if (!arg) {
-				ctx.ui.notify(`Current mode: ${mode}\n/mode discuss | /mode plan | /mode execute (Ctrl+Alt+M cycles)`, "info");
+				ctx.ui.notify(`Current mode: ${mode}\n/mode discuss | /mode plan | /mode execute (Tab cycles; Ctrl+Space autocompletes)`, "info");
 				return;
 			}
 			if (arg === "discuss" || arg === "plan" || arg === "execute") setMode(arg, ctx);
@@ -156,8 +188,13 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const cycleMode = async (ctx: ExtensionContext) => setMode(mode === "discuss" ? "plan" : mode === "plan" ? "execute" : "discuss", ctx);
+	pi.registerShortcut(Key.tab, {
+		description: "Cycle harness mode discuss -> plan -> execute",
+		handler: cycleMode,
+	});
 	pi.registerShortcut(Key.ctrlAlt("m"), {
 		description: "Cycle harness mode discuss -> plan -> execute",
-		handler: async (ctx) => setMode(mode === "discuss" ? "plan" : mode === "plan" ? "execute" : "discuss", ctx),
+		handler: cycleMode,
 	});
 }

@@ -3,10 +3,12 @@ import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isReadOnlyCommand } from "./lib/read-only.ts";
 
 export const VAULT_ROOT = "/Users/rachitsrivastava/Library/CloudStorage/ProtonDrive-privacyprophetHQ@proton.me-folder/Obs";
-const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
+const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
+const RECURSIVE_TOOLS = new Set(["grep", "find", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "project_report"]);
 export const SECRET_PATHS = [".ssh", ".gnupg", ".aws", ".aws-sam", ".docker", ".npmrc", ".netrc", ".git-credentials", ".pypirc", ".pi/agent/auth.json", ".pi/agent/models-store.json", ".config/opencode", ".config/stripe", ".config/github-copilot", ".config/sops", ".cargo/credentials", ".cargo/credentials.toml", ".mongodb", "ns-owner.key", "Library/Keychains", ".emulator_console_auth_token"].map(p => path.join(os.homedir(), p));
 
 function within(target: string, root: string): boolean {
@@ -46,6 +48,10 @@ export function pathDenied(value: string, cwd: string, recursive = false): strin
 export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		const input = (event.input ?? {}) as Record<string, unknown>;
+		if (event.toolName === "harness_check") {
+			if (process.env.PI_SUBAGENT_READ_ONLY === "1" && input.action !== "status") return { block: true, reason: "Read-only subagent may only inspect verification status." };
+			return;
+		}
 		if (event.toolName === "bash") {
 			const command = String(input.command ?? "");
 			if (process.env.PI_SUBAGENT_READ_ONLY === "1" && !isReadOnlyCommand(command)) return { block: true, reason: "Read-only subagent: command is outside the permitted shell subset." };
@@ -56,10 +62,22 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (!FILE_TOOLS.has(event.toolName)) return;
-		const raw = [input.path, input.file_path, input.filePath].find(v => typeof v === "string") as string | undefined;
+		const candidates = [input.path, input.file_path, input.filePath, input.root, input.rootPath, input.newFilePath].filter((value): value is string => typeof value === "string");
+		if (Array.isArray(input.paths)) candidates.push(...input.paths.filter((value): value is string => typeof value === "string" && !value.startsWith("!")));
+		if (!candidates.length) candidates.push(".");
 		try {
-			const reason = pathDenied(raw ?? ".", ctx.cwd, event.toolName === "grep" || event.toolName === "find");
-			if (reason) return { block: true, reason: `Blocked by creds-guard: ${reason}.` };
+			for (const raw of candidates) {
+				// Recursive extension searches accept globs: guard the whole possible
+				// expansion rather than treating '*' as a literal filename.
+				const recursive = RECURSIVE_TOOLS.has(event.toolName);
+				const glob = recursive ? raw.search(/[?*\[{]/) : -1;
+				const prefix = glob >= 0 ? raw.slice(0, glob) : raw;
+				const target = glob >= 0 ? (prefix.endsWith(path.sep) ? prefix : path.dirname(prefix)) || "." : raw;
+				if (recursive && raw.split(path.sep).some(part => part.startsWith(".env") && /[?*\[{]/.test(part))) return { block: true, reason: "Credential glob blocked by creds-guard." };
+				if (["write", "edit", "ast_grep_replace", "lsp_navigation"].includes(event.toolName) && within(canonicalPath(target, ctx.cwd), canonicalPath(path.join(getAgentDir(), "harness"), ctx.cwd))) return { block: true, reason: "Harness evidence is managed by harness_check; direct edits are blocked." };
+				const reason = pathDenied(target, ctx.cwd, recursive);
+				if (reason) return { block: true, reason: `Blocked by creds-guard: ${reason}.` };
+			}
 		} catch { return { block: true, reason: "creds-guard could not safely resolve the target path." }; }
 	});
 }
