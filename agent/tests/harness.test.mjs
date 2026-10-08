@@ -72,8 +72,8 @@ if (process.argv.includes("--mode")) {
 
 	const guardHooks = new Map();
 	guard.default({ on: (name, handler) => guardHooks.set(name, handler) });
-	check((await guardHooks.get("tool_call")({ toolName: "write", input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root })).block, "direct evidence edits blocked");
-	check((await guardHooks.get("tool_call")({ toolName: "hashline_edit", input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root }))?.block, "hashline edits cannot touch evidence");
+	const { FILE_MUTATING_TOOLS } = await jiti.import(path.join(root, "extensions/lib/tools.ts"));
+	for (const toolName of FILE_MUTATING_TOOLS) check((await guardHooks.get("tool_call")({ toolName, input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root }))?.block, `${toolName} cannot touch harness evidence`);
 	check((await guardHooks.get("tool_call")({ toolName: "hashline_edit", input: { path: "~/.ssh/config" } }, { cwd: root }))?.block, "hashline edits respect credential boundaries");
 	for (const p of ["@~/.ssh/id_ed25519", "@" + path.join(root, "auth.json")]) check((await guardHooks.get("tool_call")({ toolName: "read", input: { path: p } }, { cwd: root }))?.block, `@-prefixed path ${p} is resolved like pi before matching`);
 	check((await guardHooks.get("tool_call")({ toolName: "read_symbol", input: { path: path.join(root, "auth.json") } }, { cwd: root })).block, "code-intelligence reads respect credential boundaries");

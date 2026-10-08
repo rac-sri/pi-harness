@@ -33,6 +33,7 @@ import { plannerPrompt } from "./plans.ts";
 import { loadRuntimeConfig } from "./runtime.ts";
 import { acquireWriter } from "../lib/writer-lock.ts";
 import { TokenSpeed } from "../lib/token-speed.ts";
+import { FILE_MUTATING_TOOLS } from "../lib/tools.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -387,7 +388,7 @@ export async function runSingleAgent(
 	try {
 		runtime = loadRuntimeConfig();
 		if (!args.includes("--thinking") && !/:(off|minimal|low|medium|high|xhigh)$/.test(model ?? "") && runtime.thinking[agent.name]) args.push("--thinking", runtime.thinking[agent.name]);
-		if (agent.tools === undefined || agent.tools.some(t => ["write", "edit", "hashline_edit", "bash", "harness_check"].includes(t)) && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
+		if (agent.tools === undefined || agent.tools.some(t => FILE_MUTATING_TOOLS.has(t) || t === "bash" || t === "harness_check") && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
 		emitUpdate(true);
 		const systemPrompt = agent.name === "planner" ? plannerPrompt(agent.systemPrompt, cwd ?? defaultCwd) : agent.systemPrompt;
 		if (systemPrompt.trim()) {
@@ -461,7 +462,7 @@ export async function runSingleAgent(
 				}
 				if (event.type === "tool_execution_start") {
 					if (event.toolCallId) toolArgs.set(event.toolCallId, event.args ?? {});
-					if (["write", "edit", "hashline_edit", "bash", "debug", "ast_grep_replace", "lsp_navigation"].includes(event.toolName)) {
+					if (FILE_MUTATING_TOOLS.has(event.toolName) || event.toolName === "bash" || event.toolName === "debug") {
 						const activeRun = [...checkpointRuns.keys()].at(-1);
 						if (activeRun) checkpointRuns.set(activeRun, false);
 					}

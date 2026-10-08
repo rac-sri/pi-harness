@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { root, jiti } from "./lib/loader.mjs";
 
+// Every tool that must invalidate a recorded completion: file edits plus the debugger.
+const { FILE_MUTATING_TOOLS } = await jiti.import(path.join(root, "extensions/lib/tools.ts"));
+const INVALIDATING = [...FILE_MUTATING_TOOLS, "debug"];
+
 if (process.argv.includes("--mode")) {
   const task = process.argv.find(arg => arg.startsWith("Task: "))?.slice(6);
   const emit = value => console.log(JSON.stringify(value));
@@ -18,7 +22,7 @@ if (process.argv.includes("--mode")) {
     emit({ type: "message_update", assistantMessageEvent: { type: "text_delta" }, message: { role: "assistant", content: [{ type: "text", text: "Live response" }] } });
     emit({ type: "tool_execution_start", toolName: "read", args: { path: "src/state.ts" } });
     emit({ type: "tool_execution_end", toolName: "read", args: {}, isError: false });
-    if (["EVIDENCE", "MULTI", "STALE", "debug", "ast_grep_replace", "lsp_navigation", "hashline_edit"].includes(task)) {
+    if (["EVIDENCE", "MULTI", "STALE", ...INVALIDATING].includes(task)) {
       for (const action of ["define", "complete"]) harness(action, "C1", action === "complete" ? "verified" : "pending");
     }
     if (task === "MULTI") {
@@ -26,7 +30,7 @@ if (process.argv.includes("--mode")) {
       emit({ type: "tool_execution_start", toolName: "write", args: { path: "new-source" } });
       harness("complete", "C2", "verified");
     }
-    if (["debug", "ast_grep_replace", "lsp_navigation", "hashline_edit"].includes(task)) emit({ type: "tool_execution_start", toolName: task, args: {} });
+    if (INVALIDATING.includes(task)) emit({ type: "tool_execution_start", toolName: task, args: {} });
     if (task === "STALE") emit({ type: "tool_execution_start", toolName: "bash", args: { command: "touch source" } });
     emit({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Provider reasoning completed" }, { type: "text", text: "Done" }], usage: { output: task === "TOKENS" ? 50 : 20 }, stopReason: "stop" } });
   }
@@ -76,7 +80,7 @@ if (process.argv.includes("--mode")) {
     assert.equal(multi.stopReason, "stop"); checks++;
     const stale = await subagent.runSingleAgent(fixture, {}, [executor], "executor", "STALE", undefined, undefined, undefined, undefined, details);
     assert.match(stale.errorMessage, /completion rejected/); checks++;
-    for (const task of ["debug", "ast_grep_replace", "lsp_navigation", "hashline_edit"]) {
+    for (const task of INVALIDATING) {
       const changed = await subagent.runSingleAgent(fixture, {}, [executor], "executor", task, undefined, undefined, undefined, undefined, details);
       assert.match(changed.errorMessage, /completion rejected/); checks++;
     }

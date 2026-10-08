@@ -5,6 +5,7 @@ import * as os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isReadOnlyCommand, READ_ONLY_HINT } from "./lib/read-only.ts";
+import { FILE_MUTATING_TOOLS } from "./lib/tools.ts";
 
 export const VAULT_ROOT = "/Users/rachitsrivastava/Library/CloudStorage/ProtonDrive-privacyprophetHQ@proton.me-folder/Obs";
 const FILE_TOOLS = new Set(["read", "write", "edit", "hashline_edit", "grep", "find", "ls", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_replace", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
@@ -78,7 +79,7 @@ export default function (pi: ExtensionAPI) {
 				const prefix = glob >= 0 ? raw.slice(0, glob) : raw;
 				const target = glob >= 0 ? (prefix.endsWith(path.sep) ? prefix : path.dirname(prefix)) || "." : raw;
 				if (recursive && raw.split(path.sep).some(part => part.startsWith(".env") && /[?*\[{]/.test(part))) return { block: true, reason: "Credential glob blocked by creds-guard." };
-				if (["write", "edit", "hashline_edit", "ast_grep_replace", "lsp_navigation"].includes(event.toolName) && within(canonicalPath(target, ctx.cwd), canonicalPath(path.join(getAgentDir(), "harness"), ctx.cwd))) return { block: true, reason: "Harness evidence is managed by harness_check; direct edits are blocked." };
+				if (FILE_MUTATING_TOOLS.has(event.toolName) && within(canonicalPath(target, ctx.cwd), canonicalPath(path.join(getAgentDir(), "harness"), ctx.cwd))) return { block: true, reason: "Harness evidence is managed by harness_check; direct edits are blocked." };
 				const reason = pathDenied(target, ctx.cwd, recursive);
 				if (reason) return { block: true, reason: `Blocked by creds-guard: ${reason}.` };
 			}
