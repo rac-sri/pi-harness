@@ -46,7 +46,7 @@ flowchart LR
 
 - Covered by tests: modes, sandbox policy, credential guard, verification evidence, checkpoint commits, writer lock, subagent streaming and budgets, the `question` tool.
 - Measured once: on four small domain bugs with tests hidden, the harness and a plain agent on the same model both solved 8/8. The harness took about 1.5× the time and cost, and the only thing it added was recorded evidence. Harder cases are needed to tell them apart (`agent/tests/domain-eval.mjs`).
-- Not yet run end to end: `/implement <goal file>`, including parallel worktrees and checkpoint reviews.
+- Not yet run end to end: `/implement` on a goal file, including parallel worktrees and checkpoint reviews.
 
 ## Install
 
@@ -99,7 +99,7 @@ Switch with `/mode discuss|plan|execute`, Tab, or Ctrl+Alt+M. Autocomplete moves
 | `/discuss <topic>` | One `discuss` agent with no tools or project context. Paste in anything it should know. | No |
 | `/plan <mission>` | Plans one goal: interview, planner draft, your checkpoints, planner finalize. See [below](#micro-managed-planning-missions-and-goals). | No |
 | `/implement <request>` | Path A: one executor for a small, clear task. Path B: scout, planner, executor, reviewer for multi-component or sensitive changes. | Yes |
-| `/implement <goal file>` | Path G: runs a goal file checkpoint by checkpoint, stopping for review where you asked. | Yes |
+| `/implement` | Opens a picker of this repo's planned goals, next goal first, then runs the chosen one (Path G) checkpoint by checkpoint, stopping for review where you asked. `/implement <mission>` limits the list to one mission. | Yes |
 | `/build-and-review <request>` | Scout, executor, adversarial reviewer, then an executor fix run only if the reviewer found problems. | Yes |
 
 Any command stops and reports `PROVIDER UNAVAILABLE` on quota or auth errors (429/402/401/403) instead of retrying.
@@ -143,7 +143,9 @@ You don't have to type `/plan`. Asking for an implementation plan in plan or exe
 5. Checkpoints. You give the lines (`after T4, after T10`) and a review mode for each. You can edit tasks here too.
 6. Finalize. The planner fills in the checkpoints and checklist, and marks the goal `planned`.
 
-#### Running it: `/implement <goal file>`
+#### Running it: `/implement`
+
+Type `/implement` with no arguments. It lists the planned goals of every mission whose `repo:` contains your current directory: goals being executed first, then planned ones, newest mission first. The full goal list of each mission is shown above the choices. Pick one, or type a request instead.
 
 For each checkpoint segment:
 
@@ -251,6 +253,7 @@ Restart Pi or run `/reload` after changing extensions or `settings.json`.
     │   ├── creds-guard.ts    # tool-level credentials and vault guard
     │   ├── compact-read.ts   # compact display for read results
     │   ├── question.ts       # radio/checkbox questions with a type-your-own row
+    │   ├── implement-picker.ts # bare /implement opens a goal picker
     │   ├── hashline/         # executor-only tagged read + hashline_edit (loaded by the dispatcher)
     │   ├── advisor-patch-guard.ts
     │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed, hashline
@@ -268,7 +271,7 @@ Not tracked: `auth.json`, `install/`, `sessions/`, `harness/` (run state), cache
 Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harness suite stops with `EPERM` on `auth.json`.
 
 ```sh
-for t in harness.test modes-check verification-check subagent-progress-check hashline-check \
+for t in harness.test modes-check verification-check subagent-progress-check hashline-check implement-picker-check \
          debugger-check advisor-config-check advisor-patch-guard \
          advisor-session-header typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
@@ -282,6 +285,7 @@ done
 | `verification-check.mjs` | Evidence freshness, failure evidence, scoped checkpoint commits, writer lock |
 | `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection |
 | `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files |
+| `implement-picker-check.mjs` | Goal discovery by repo path across projects, next-goal ordering, input rewrite, pass-through of normal requests |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |
 | `advisor-*.mjs` | Advisor config validation and the session-id patch |
 | `typecheck.mjs` | Strict TypeScript over all extensions. Prints `SKIPPED` if `tsc` isn't installed. |

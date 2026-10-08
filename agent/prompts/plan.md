@@ -25,6 +25,6 @@ You plan exactly ONE goal per run. Do not plan tasks for other goals, and do not
    Options: "Confirm and draft tasks", "Change a decision", "Change the scope". Draft only after "Confirm".
 4. **Draft.** Dispatch the "planner" with `Kind: draft`, the mission slug, the goal list, the goal to plan, the scout context, and the confirmed decisions written out in full. Show the user the numbered task list it returns.
 5. **Checkpoints.** With the `question` tool, offer two or three sensible checkpoint splits as options (e.g. "after T4, after T10"); the user can type their own. Then ask once per checkpoint for its review mode: `manual` (they review), `auto` (reviewer agent), or `both` (reviewer first, then them). Point out tasks that share a parallel group, since those can run as parallel subagents between checkpoints. Accept task edits here too.
-6. **Finalize.** Dispatch the "planner" with `Kind: finalize`, the goal file path, the checkpoints with their review modes, and any task edits. Report the goal file and `mission.md` paths, plus the command to run it: `/implement <goal file path>`.
+6. **Finalize.** Dispatch the "planner" with `Kind: finalize`, the goal file path, the checkpoints with their review modes, and any task edits. Tell the user the goal is planned and to run `/implement` (in execute mode) with no arguments: it lists this repo's planned goals with this one first. Do not print file paths for the user to copy.
 
 When this goal is executed and marked `done`, the next `/plan <mission>` moves on to the next goal.
