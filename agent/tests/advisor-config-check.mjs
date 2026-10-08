@@ -1,13 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 
-const root = "/Users/rachitsrivastava/.pi/agent";
-const version = fs.readFileSync(path.join(root, "install/current-version"), "utf8").trim();
-const modules = path.join(root, "install/releases", version, "node_modules");
-const require = createRequire(path.join(modules, "@earendil-works/pi-coding-agent/package.json"));
-const { createJiti } = require("jiti");
-const jiti = createJiti(import.meta.url, { fsCache: false, moduleCache: false });
+import { root, modules, jiti } from "./lib/loader.mjs";
 const pkg = path.join(root, "npm/node_modules/pi-advisor-flow/src/config");
 const { validateConfig, unknownConfigKeys } = await jiti.import(path.join(pkg, "validation.ts"));
 const raw = JSON.parse(fs.readFileSync(path.join(root, "advisor.json"), "utf8"));

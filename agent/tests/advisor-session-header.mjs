@@ -6,17 +6,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 
-const root = "/Users/rachitsrivastava/.pi/agent";
-const version = fs.readFileSync(path.join(root, "install/current-version"), "utf8").trim();
-const modules = path.join(root, "install/releases", version, "node_modules");
-const require = createRequire(path.join(modules, "@earendil-works/pi-coding-agent/package.json"));
-const { createJiti } = require("jiti");
-const alias = Object.fromEntries(["compat", "oauth", "providers/all"].map(name => [`@earendil-works/pi-ai/${name}`, path.join(modules, "@earendil-works/pi-ai/dist", name + ".js")]));
-Object.assign(alias, Object.fromEntries(["pi-coding-agent", "pi-agent-core", "pi-tui", "pi-ai"].map(name => [`@earendil-works/${name}`, path.join(modules, "@earendil-works", name, "dist", name === "pi-ai" ? "compat.js" : "index.js")])));
-alias.typebox = require.resolve("typebox");
-const jiti = createJiti(import.meta.url, { alias, fsCache: false, moduleCache: false });
+import { root, modules, jiti } from "./lib/loader.mjs";
 
 const SESSION = "01a10d82-4e47-70c4-842f-d41ffbd4c146";
 const MODEL = { id: "kimi-k3", provider: "opencode-go", api: "openai-completions", name: "Kimi K3" };

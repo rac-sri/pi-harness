@@ -75,7 +75,6 @@ Pi uses `~/.pi/agent/` as its standard global config directory (`getAgentDir()`)
 - `/plan <mission or request>` — plans ONE goal: grill-me interview → planner draft → user picks checkpoints + review modes → planner finalize; no code changes
 - `/implement <request>` — direct executor for clear small tasks; scout/planner for complex or sensitive tasks, then executor
 - `/build-and-review <request>` — optional scout → executor → reviewer → executor only when fixes are needed
-- `/quick <request>` — one executor with a correctness contract and recorded verification
 
 ## Adding a project-scoped agent
 
@@ -135,7 +134,7 @@ Run `node agent/tests/typecheck.mjs` (requires the installed TypeScript compiler
 - Each mode = tool allowlists + `tool_call` gates (defense-in-depth) + a `harness_mode` system-prompt section. The section is byte-stable while the mode is unchanged, so the provider prompt cache survives across turns (do not reintroduce per-turn messages or `context` hooks that rewrite history). Every mode carries the same scope rules: do exactly what was asked, smallest change, no unrequested files/migrations/plan docs, stop on provider failures.
   - **discuss**: read-only repo inspection; `bash`/`edit`/`write`/`pi_lens_activate_tools` blocked; subagent dispatch restricted to `discuss`
   - **plan**: read-only; bash allowlisted to read-only commands; executor blocked; plans are inline unless the user asks for a persisted one or runs `/plan`
-  - **execute**: full tools; work is done directly. Subagents, `harness_check` contracts, plan files and the advisor are used only via `/implement`, `/build-and-review`, `/plan`, `/quick` or an explicit request.
+  - **execute**: full tools; work is done directly. Subagents, `harness_check` contracts, plan files and the advisor are used only via `/implement`, `/build-and-review`, `/plan` or an explicit request.
 - Subagent children are exempt from the main mode switch (`PI_SUBAGENT_CHILD=1`), but scout/reviewer bash calls use the shared read-only policy (`PI_SUBAGENT_READ_ONLY=1`, inherited by descendants). Restricted main modes only dispatch personal agents, preventing project definitions from overriding allowed roles.
 - Regression suite: `node agent/tests/harness.test.mjs` from `~/.pi` using Node >=22.19.0 (Pi 1.0.1's runtime requirement). Tests cover command policy, canonical paths, mode injection/gates, zero-tool dispatch, cancellation escalation, sandbox policy, and extension loading. Restart Pi sessions after changing extensions.
   - The full suite aborts inside a sandboxed Pi shell (`EPERM` lstat on `agent/auth.json` during the creds-guard symlink check). These slices run safely from any shell: `agent/tests/modes-check.mjs` (mode activation/gates/injection), `agent/tests/advisor-config-check.mjs` (advisor config), `agent/tests/advisor-session-header.mjs` (Advisor session-id patch), `agent/tests/advisor-patch-guard.mjs` (patch self-healing guard).

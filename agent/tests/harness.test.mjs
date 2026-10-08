@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 // This file also acts as a harmless fake Pi child for dispatch/cancellation tests.
@@ -16,15 +14,7 @@ if (process.argv.includes("--mode")) {
 		console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task === "RETURN_PROMPT" ? fs.readFileSync(process.argv[process.argv.indexOf("--append-system-prompt") + 1], "utf8") : task === "RETURN_LITERALS" ? "$& $` $'" : JSON.stringify(process.argv.slice(2)) }], stopReason: "stop" } }));
 	}
 } else {
-	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-	const version = fs.readFileSync(path.join(root, "install/current-version"), "utf8").trim();
-	const modules = path.join(root, "install/releases", version, "node_modules");
-	const require = createRequire(path.join(modules, "@earendil-works/pi-coding-agent/package.json"));
-	const { createJiti } = require("jiti");
-	const alias = Object.fromEntries(["compat", "oauth", "providers/all"].map(name => [`@earendil-works/pi-ai/${name}`, path.join(modules, "@earendil-works/pi-ai/dist", name + ".js")]));
-	Object.assign(alias, Object.fromEntries(["pi-coding-agent", "pi-agent-core", "pi-tui", "pi-ai"].map(name => [`@earendil-works/${name}`, path.join(modules, "@earendil-works", name, "dist", name === "pi-ai" ? "compat.js" : "index.js")])));
-	alias.typebox = require.resolve("typebox");
-	const jiti = createJiti(import.meta.url, { alias, fsCache: false, moduleCache: false });
+	const { root, modules, jiti } = await import("./lib/loader.mjs");
 	const guard = await jiti.import(path.join(root, "extensions/creds-guard.ts"));
 	const { isReadOnlyCommand } = await jiti.import(path.join(root, "extensions/lib/read-only.ts"));
 	const { parseToolList, configuredModel, loadModelOverrides, discoverAgents } = await jiti.import(path.join(root, "extensions/subagent/agents.ts"));

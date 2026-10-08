@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const version = fs.readFileSync(path.join(root, "install/current-version"), "utf8").trim();
-const modules = path.join(root, "install/releases", version, "node_modules");
+export const modules = path.join(root, "install/releases", version, "node_modules");
 const require = createRequire(path.join(modules, "@earendil-works/pi-coding-agent/package.json"));
 const { createJiti } = require("jiti");
 const alias = Object.fromEntries(["compat", "oauth", "providers/all"].map(name => [`@earendil-works/pi-ai/${name}`, path.join(modules, "@earendil-works/pi-ai/dist", name + ".js")]));

@@ -43,7 +43,7 @@ ${SCOPE_RULES}`;
 const EXECUTE_MODE_INSTRUCTIONS = `${CONTEXT_TAG.execute}
 You are in EXECUTE mode: full tool access.
 - Do the work directly with read/edit/write/bash, then run the relevant build or tests and report the results.
-- Use subagents, harness_check contracts, plan files, and the advisor only when the user invokes /implement, /build-and-review, /plan, or /quick, or asks for them explicitly.
+- Use subagents, harness_check contracts, plan files, and the advisor only when the user invokes /implement, /build-and-review, or /plan, or asks for them explicitly.
 ${SCOPE_RULES}`;
 
 // ---------------------------------------------------------------------------
