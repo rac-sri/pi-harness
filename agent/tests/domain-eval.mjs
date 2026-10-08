@@ -50,12 +50,16 @@ assert.equal(mod.valid('invalid-key',msg,sig),false);`,
 function testSource(source, tests) { return `import assert from 'node:assert/strict';\nimport * as mod from ${JSON.stringify(pathToFileURL(source).href)};\n${tests}\n`; }
 function evaluate(file, cwd) { return spawnSync(process.execPath, [file], { cwd, encoding: "utf8", timeout: 15000 }); }
 
-async function agentRun(repo, request) {
+async function agentRun(repo, request, arm, hidden) {
   const model = JSON.parse(fs.readFileSync(path.join(root, "agents/models.json"), "utf8"));
   const prompt = fs.readFileSync(path.join(root, "agents/executor.md"), "utf8").replace(/^---[\s\S]*?---\s*/, "");
   const promptFile = path.join(path.dirname(repo), "executor.md"); fs.writeFileSync(promptFile, prompt);
-  const args = ["--mode", "json", "-p", "--no-session", "--no-prompt-templates", "--no-extensions", "-e", path.join(root, "extensions/creds-guard.ts"), "-e", path.join(root, "extensions/sandbox/index.ts"), "--model", model.executor ?? model.default, "--thinking", "medium", "--tools", "read,write,edit,bash,grep,find,ls,harness_check", "--append-system-prompt", promptFile,
-    `Task: ${request}\nRepo: ${repo}. Modify only source.mjs if needed. Verify with node verify.mjs using harness_check; define an immutable contract before changes. Do not commit. Correct code should remain unchanged. End with harness_check complete. This is a bounded engineering evaluation, not a production cryptographic design.`];
+  // Both arms get the same model, sandbox, guard and task; only the harness prompt and harness_check differ.
+  const scope = hidden ? "No tests are provided: write your own checks in new test files, run them, and modify source.mjs only if they show it is wrong." : "Modify only source.mjs if needed. Tests are in verify.mjs.";
+  const verify = arm === "harness" ? (hidden ? " Register your own test files as harness_check checks; define an immutable contract before changes. End with harness_check complete." : " Verify with node verify.mjs using harness_check; define an immutable contract before changes. End with harness_check complete.") : " Run the tests before finishing.";
+  const args = ["--mode", "json", "-p", "--no-session", "--no-prompt-templates", "--no-extensions", "-e", path.join(root, "extensions/creds-guard.ts"), "-e", path.join(root, "extensions/sandbox/index.ts"), "--model", model.executor ?? model.default, "--thinking", "medium",
+    "--tools", arm === "harness" ? "read,write,edit,bash,grep,find,ls,harness_check" : "read,write,edit,bash,grep,find,ls", ...(arm === "harness" ? ["--append-system-prompt", promptFile] : []),
+    `Task: ${request}\nRepo: ${repo}. ${scope}${verify} Do not commit. Correct code should remain unchanged. This is a bounded engineering evaluation, not a production cryptographic design.`];
   const started = Date.now();
   return await new Promise(resolve => {
     const child = spawn(path.join(root, "bin/pi"), args, { cwd: repo, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PI_SUBAGENT_CHILD: "1" } });
@@ -79,6 +83,8 @@ async function agentRun(repo, request) {
 const selected = process.argv.includes("--case") ? process.argv[process.argv.indexOf("--case") + 1] : undefined;
 if (selected && !cases.some(item => item.id === selected)) throw new Error(`Unknown case: ${selected}`);
 const live = process.argv.includes("--agent");
+const hidden = process.argv.includes("--hidden-tests");
+const arms = process.argv.includes("--baseline") ? ["baseline", "harness"] : ["harness"];
 const results = [];
 for (const item of cases.filter(item => !selected || item.id === selected)) {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-domain-eval-"));
@@ -86,23 +92,23 @@ for (const item of cases.filter(item => !selected || item.id === selected)) {
     const repo = path.join(fixture, "repo"); fs.mkdirSync(repo);
     const source = path.join(repo, "source.mjs");
     const independent = path.join(fixture, "independent.mjs"); fs.writeFileSync(independent, testSource(source, item.tests));
-    for (const [variant, code] of [["broken", item.broken], ["clean", item.fixed]]) {
+    for (const arm of live ? arms : ["harness"]) for (const [variant, code] of [["broken", item.broken], ["clean", item.fixed]]) {
+      // Fresh repository per run so arms and variants cannot see each other's files.
+      fs.rmSync(repo, { recursive: true, force: true }); fs.mkdirSync(repo);
       fs.writeFileSync(source, code);
-      fs.writeFileSync(path.join(repo, "verify.mjs"), testSource(source, item.tests));
+      if (!hidden) fs.writeFileSync(path.join(repo, "verify.mjs"), testSource(source, item.tests));
       const baseline = evaluate(independent, repo).status === 0;
       assert.equal(baseline, variant === "clean", `${item.id}: evaluation distinguishes broken and reference code`);
       if (!live) { results.push({ case: item.id, variant, expectedPass: baseline }); continue; }
-      if (!fs.existsSync(path.join(repo, ".git"))) {
-        for (const args of [["init"], ["config", "user.name", "Harness Eval"], ["config", "user.email", "eval@example.invalid"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
-      }
-      execFileSync("git", ["add", "source.mjs", "verify.mjs"], { cwd: repo });
-      execFileSync("git", ["commit", "--allow-empty", "-m", `baseline ${variant}`], { cwd: repo, stdio: "ignore" });
-      console.log(`Running ${item.id}/${variant}…`);
-      const agent = await agentRun(repo, item.request + ` Use unique harness run id eval-${item.id}-${variant}.`);
+      for (const args of [["init"], ["config", "user.name", "Harness Eval"], ["config", "user.email", "eval@example.invalid"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["add", "."], { cwd: repo });
+      execFileSync("git", ["commit", "-m", `baseline ${variant}`], { cwd: repo, stdio: "ignore" });
+      console.log(`Running ${arm} ${item.id}/${variant}…`);
+      const agent = await agentRun(repo, item.request + (arm === "harness" ? ` Use unique harness run id eval-${item.id}-${variant}.` : ""), arm, hidden);
       const passed = evaluate(independent, repo).status === 0;
       const changed = fs.readFileSync(source, "utf8") !== code;
-      results.push({ case: item.id, variant, independentTestsPassed: passed, unnecessaryCleanEdit: variant === "clean" && changed, ...agent });
-      console.log(`${item.id}/${variant}: tests ${passed ? "pass" : "fail"}, evidence ${agent.completed ? "complete" : "missing"}, ${Math.round(agent.elapsedMs / 1000)}s`);
+      results.push({ arm, hidden, case: item.id, variant, independentTestsPassed: passed, unnecessaryCleanEdit: variant === "clean" && changed, ...agent, stderr: agent.exitCode ? agent.stderr : undefined });
+      console.log(`${arm} ${item.id}/${variant}: tests ${passed ? "pass" : "fail"}${variant === "clean" && changed ? " (edited clean code)" : ""}, evidence ${agent.completed ? "complete" : "missing"}, ${Math.round(agent.elapsedMs / 1000)}s, ${agent.outputTokens ?? 0} tok, exit ${agent.exitCode}`);
     }
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 }
@@ -110,5 +116,10 @@ if (live) {
   const directory = path.join(root, "harness/evals"); fs.mkdirSync(directory, { recursive: true });
   const report = path.join(directory, `${Date.now()}.json`);
   fs.writeFileSync(report, JSON.stringify({ createdAt: new Date().toISOString(), results }, null, 2) + "\n");
+  for (const arm of arms) {
+    const rows = results.filter(r => r.arm === arm);
+    const sum = key => rows.reduce((n, r) => n + (r[key] ?? 0), 0);
+    console.log(`${arm}: ${rows.filter(r => r.independentTestsPassed).length}/${rows.length} pass hidden grader, ${rows.filter(r => r.unnecessaryCleanEdit).length} clean-code edits, ${Math.round(sum("elapsedMs") / 1000)}s, ${sum("outputTokens")} output tokens, $${sum("reportedCost").toFixed(3)}`);
+  }
   console.log(`Evaluation report: ${report}`);
-} else console.log(`Passed ${results.length} domain evaluation fixture checks. Use --agent to measure live executor correctness, clean-case edits, latency, tokens, and reported cost; --case <id> selects one pair.`);
+} else console.log(`Passed ${results.length} domain evaluation fixture checks. Use --agent to measure live executor correctness, clean-case edits, latency, tokens, and reported cost; --baseline adds a plain-agent arm; --hidden-tests withholds verify.mjs; --case <id> selects one pair.`);
