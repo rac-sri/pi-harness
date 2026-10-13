@@ -18,6 +18,15 @@ try {
   const git = args => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   git(["init"]); git(["config", "user.name", "Harness Test"]); git(["config", "user.email", "test@example.invalid"]);
   fs.writeFileSync(path.join(repo, "code.txt"), "initial\n"); git(["add", "code.txt"]); git(["commit", "-m", "initial"]);
+  fs.writeFileSync(path.join(repo, ".env.example.oracle"), "ORACLE_URL=https://example.invalid\n");
+  git(["add", ".env.example.oracle"]); git(["commit", "-m", "example config"]);
+  const exampleBefore = await fingerprint(repo, ops);
+  fs.appendFileSync(path.join(repo, ".env.example.oracle"), "EXAMPLE=true\n");
+  check(exampleBefore !== await fingerprint(repo, ops), "suffixed example configs are allowed and included in fingerprints");
+  fs.writeFileSync(path.join(repo, ".env.example.oracle"), "ORACLE_URL=https://example.invalid\n");
+  fs.writeFileSync(path.join(repo, ".env.oracle"), "test secret fixture");
+  await assert.rejects(fingerprint(repo, ops), /Cannot fingerprint protected file: .env.oracle/); checks++;
+  fs.unlinkSync(path.join(repo, ".env.oracle"));
   const store = path.join(fixture, "evidence");
   const action = input => runHarnessAction({ run: "C1", ...input }, repo, ops, undefined, store);
   const lock = acquireWriter(repo, path.join(fixture, "locks"));

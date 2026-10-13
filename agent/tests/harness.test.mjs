@@ -61,17 +61,26 @@ if (process.argv.includes("--mode")) {
 	check(parseToolList(undefined) === undefined, "omitted tools inherit");
 	assert.deepEqual(parseToolList(["read", 42]), []); checks++;
 	assert.deepEqual(parseToolList("read, bash"), ["read", "bash"]); checks++;
-	for (const p of ["agent/auth.json", "agent/models-store.json", "agent/../agent/auth.json", guard.VAULT_ROOT + "/Agents/../private.md", ".env.example.local", ".env.sample-secret"]) check(Boolean(guard.pathDenied(p, path.dirname(root))), `deny ${p}`);
-	for (const p of ["agent/HARNESS.md", ".env.example", guard.VAULT_ROOT + "/Agents/project/plan.md"]) check(!guard.pathDenied(p, path.dirname(root)), `allow ${p}`);
+	for (const p of ["agent/auth.json", "agent/models-store.json", "agent/../agent/auth.json", guard.VAULT_ROOT + "/Agents/../private.md", ".env", ".env.local", ".env.oracle", ".env.example-secret", ".env.sample-secret"]) check(Boolean(guard.pathDenied(p, path.dirname(root))), `deny ${p}`);
+	for (const p of ["agent/HARNESS.md", ".env.example", ".env.example.oracle", ".env.example.local", "nested/.env.sample.oracle", ".env.template.dev", ".env.dist.local", guard.VAULT_ROOT + "/Agents/project/plan.md"]) check(!guard.pathDenied(p, path.dirname(root)), `allow ${p}`);
 	check(Boolean(guard.pathDenied(".", path.dirname(root), true)), "recursive search cannot include credentials");
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "pi-guard-test-"));
 	try {
 		fs.symlinkSync(path.join(root, "auth.json"), path.join(scratch, "alias"));
 		check(Boolean(guard.pathDenied("alias", scratch)), "credential symlink denied");
+		fs.writeFileSync(path.join(scratch, ".env"), "test secret fixture");
+		fs.symlinkSync(".env", path.join(scratch, ".env.example.oracle"));
+		check(Boolean(guard.pathDenied(".env.example.oracle", scratch)), "example alias to secret remains denied");
 	} finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 
 	const guardHooks = new Map();
 	guard.default({ on: (name, handler) => guardHooks.set(name, handler) });
+	for (const p of [".env.example", ".env.example.oracle", "nested/.env.sample.oracle", ".env.template.dev", ".env.dist.local"]) {
+		check(!(await guardHooks.get("tool_call")({ toolName: "read", input: { path: p } }, { cwd: root }))?.block, `file read allows ${p}`);
+		check(!(await guardHooks.get("tool_call")({ toolName: "bash", input: { command: `cat '${p}'` } }, { cwd: root }))?.block, `bash read allows ${p}`);
+	}
+	for (const p of [".env", ".env.local", ".env.oracle", ".env.example-secret", ".env.sample-secret"]) check((await guardHooks.get("tool_call")({ toolName: "bash", input: { command: `cat '${p}'` } }, { cwd: root }))?.block, `bash still denies ${p}`);
+
 	const { FILE_MUTATING_TOOLS } = await jiti.import(path.join(root, "extensions/lib/tools.ts"));
 	for (const toolName of FILE_MUTATING_TOOLS) check((await guardHooks.get("tool_call")({ toolName, input: { path: path.join(root, "harness/test/state.json") } }, { cwd: root }))?.block, `${toolName} cannot touch harness evidence`);
 	check((await guardHooks.get("tool_call")({ toolName: "hashline_edit", input: { path: "~/.ssh/config" } }, { cwd: root }))?.block, "hashline edits respect credential boundaries");
@@ -158,7 +167,7 @@ if (process.argv.includes("--mode")) {
 	check(hashlineArgs.includes("--no-extensions") && hashlineArgs.includes(path.join(root, "extensions/hashline/tool.ts")) && hashlineArgs.includes(path.join(root, "npm/node_modules/pi-lens/dist/index.js")), "executor loads hashline tools with Lens and no unrelated plugins");
 
 	let subagentTool;
-	subagent.default({ registerTool: tool => { subagentTool = tool; } });
+	subagent.default({ on() {}, registerTool: tool => { subagentTool = tool; } });
 	const chainResult = await subagentTool.execute("test", { chain: [{ agent: "discuss", task: "RETURN_LITERALS" }, { agent: "discuss", task: "Prior: {previous}" }] }, undefined, undefined, { cwd: root, hasUI: false });
 	check(JSON.parse(chainResult.content[0].text).includes("Task: Prior: $& $` $'"), "chain replacement preserves dollar tokens");
 	const controller = new AbortController();

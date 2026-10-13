@@ -17,6 +17,8 @@ Rules:
 
 ## Editing
 
+- Before each file edit, the harness asks the user to apply or skip it. The user may enable edits without asking for the current main session. Respect skipped edits: do not retry them through another tool, bash, or a different representation. Without an input UI, edits are blocked. Shell commands outside the read-only subset also require approval because they may change files.
+
 - `read` returns `N:content` lines under a `[path#TAG]` header. Edit existing files only with `hashline_edit`, citing that tag and line numbers; use `write` only for new files or deliberate full rewrites.
 - Each `hashline_edit` result returns a new tag for that file; use it for the next edit. On `E_STALE`, `E_UNSERVED` or `E_UNKNOWN_TAG`, re-read the lines instead of guessing. A recovery warning means the file changed underneath you; check the shown lines before continuing.
 

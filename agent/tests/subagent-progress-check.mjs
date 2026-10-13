@@ -36,7 +36,7 @@ if (process.argv.includes("--mode")) {
   }
 } else {
   const subagent = await jiti.import(path.join(root, "extensions/subagent/index.ts"));
-  let tool; subagent.default({ registerTool: definition => { tool = definition; } });
+  let tool; subagent.default({ on() {}, registerTool: definition => { tool = definition; } });
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-progress-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = fixture;

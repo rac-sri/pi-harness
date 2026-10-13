@@ -12,6 +12,8 @@
  * Uses JSON mode to capture structured output from subagents.
  */
 
+import type { Duplex } from "node:stream";
+import { createEditApproval, EDIT_CHOICES, serveEditApprovals, type ApproveEdit } from "../lib/edit-approval.ts";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -306,6 +308,7 @@ export async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	approveEdit?: ApproveEdit,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -340,6 +343,7 @@ export async function runSingleAgent(
 		args.push("--no-extensions", "-e", path.join(getAgentDir(), "extensions", "creds-guard.ts"), "-e", path.join(getAgentDir(), "extensions", "sandbox", "index.ts"), "-e", path.join(getAgentDir(), "npm", "node_modules", "pi-lens", "dist", "index.js"));
 		if (agent.tools.some(tool => hashlineTools.has(tool))) args.push("-e", path.join(getAgentDir(), "extensions", "hashline", "tool.ts"));
 	}
+	if (agent.name === "executor") args.push("-e", path.join(getAgentDir(), "extensions", "edit-approval", "tool.ts"));
 	const inheritsDispatchConfig = !agent.model;
 	const model = agent.model ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
@@ -413,8 +417,8 @@ export async function runSingleAgent(
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: effectiveCwd,
 				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_READ_ONLY: process.env.PI_SUBAGENT_READ_ONLY === "1" || ["scout", "reviewer"].includes(agent.name) ? "1" : "0" },
+				stdio: ["ignore", "pipe", "pipe", "pipe"],
+				env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_EXECUTOR_EDIT_APPROVAL: agent.name === "executor" ? "1" : "0", PI_SUBAGENT_READ_ONLY: process.env.PI_SUBAGENT_READ_ONLY === "1" || ["scout", "reviewer"].includes(agent.name) ? "1" : "0" },
 				detached: true,
 			});
 			if (proc.pid) writer?.childStarted(proc.pid);
@@ -425,13 +429,29 @@ export async function runSingleAgent(
 			// tool_execution_end carries no args; remember them from tool_execution_start.
 			const toolArgs = new Map<string, any>();
 			let killTimer: NodeJS.Timeout | undefined;
+			let closed = false;
 			const stopForLimit = (reason: string) => {
 				if (limitReason) return;
 				limitReason = reason;
 				try { if (proc.pid) process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill("SIGTERM"); }
 				killTimer = setTimeout(() => { try { if (proc.pid) process.kill(-proc.pid, "SIGKILL"); } catch { proc.kill("SIGKILL"); } }, 5000);
 			};
-			const deadline = setTimeout(() => stopForLimit(`Dispatch exceeded ${runtime.timeoutSeconds}s deadline`), runtime.timeoutSeconds * 1000);
+			let remainingMs = runtime.timeoutSeconds * 1000;
+			let deadlineStarted = Date.now();
+			let deadline = setTimeout(() => stopForLimit(`Dispatch exceeded ${runtime.timeoutSeconds}s deadline`), remainingMs);
+			const closeApprovals = serveEditApprovals(proc.stdio[3] as Duplex, approveEdit, signal, waiting => {
+				if (closed) return;
+				clearTimeout(deadline);
+				if (waiting) {
+					remainingMs -= Date.now() - deadlineStarted;
+					currentResult.phase = "waiting for edit approval";
+				} else {
+					deadlineStarted = Date.now();
+					deadline = setTimeout(() => stopForLimit(`Dispatch exceeded ${runtime.timeoutSeconds}s deadline`), Math.max(0, remainingMs));
+					currentResult.phase = "working";
+				}
+				emitUpdate(true);
+			});
 			const heartbeat = setInterval(() => emitUpdate(), 1000);
 
 			const processLine = (line: string) => {
@@ -522,21 +542,21 @@ export async function runSingleAgent(
 				}
 			};
 
-			proc.stdout.on("data", (data) => {
+			proc.stdout!.on("data", (data) => {
 				buffer += data.toString();
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
 				for (const line of lines) processLine(line);
 			});
 
-			proc.stderr.on("data", (data) => {
+			proc.stderr!.on("data", (data) => {
 				currentResult.stderr = (currentResult.stderr + data.toString()).slice(-65536);
 			});
 
 				let killProc: (() => void) | undefined;
-				let closed = false;
 				proc.on("close", (code) => {
 					closed = true;
+					closeApprovals();
 					clearTimeout(deadline);
 					clearInterval(heartbeat);
 					if (killTimer) clearTimeout(killTimer);
@@ -551,6 +571,8 @@ export async function runSingleAgent(
 			});
 
 			proc.on("error", (error) => {
+				closed = true;
+				closeApprovals();
 				clearTimeout(deadline);
 				clearInterval(heartbeat);
 				currentResult.errorMessage = error.message;
@@ -639,6 +661,9 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	let selectEdit: Parameters<typeof createEditApproval>[0] = async () => undefined;
+	const editApproval = createEditApproval((request, approvalSignal) => selectEdit(request, approvalSignal));
+	pi.on("session_start", async () => { editApproval.reset(); });
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -651,6 +676,12 @@ export default function (pi: ExtensionAPI) {
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			selectEdit = async (request, approvalSignal) => {
+				if (!ctx.hasUI) return undefined;
+				const preview = JSON.stringify(request.input, null, 2);
+				const shown = preview.split("\n").slice(0, 8).join("\n").slice(0, 1000);
+				return ctx.ui.select(`Apply executor edit?\n${request.cwd}\n${request.toolName}\n${shown}${shown.length < preview.length ? "\n(preview truncated; full arguments are in the tool call)" : ""}`, EDIT_CHOICES, { signal: approvalSignal });
+			};
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const dispatchDefaults: DispatchDefaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
@@ -751,6 +782,7 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						(request, approvalSignal) => editApproval.request(request, approvalSignal),
 					);
 					results.push(result);
 
@@ -830,6 +862,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						(request, approvalSignal) => editApproval.request(request, approvalSignal),
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -868,6 +901,7 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					(request, approvalSignal) => editApproval.request(request, approvalSignal),
 				);
 				const isError = isFailedResult(result);
 				if (isError) {

@@ -47,7 +47,7 @@ export function pathDenied(value: string, cwd: string, recursive = false): strin
 		const resolvedSecret = canonicalPath(secret, cwd);
 		if (within(target, resolvedSecret) || (recursive && within(resolvedSecret, target))) return "credential surface";
 	}
-	if (target.split(path.sep).some(p => /^\.env(?:$|\.)/.test(p) && !/^\.env\.(example|sample|template|dist)$/.test(p))) return ".env secrets";
+	if (target.split(path.sep).some(p => /^\.env(?:$|\.)/.test(p) && !/^\.env\.(example|sample|template|dist)(?:\.|$)/.test(p))) return ".env secrets";
 }
 
 export default function (pi: ExtensionAPI) {
@@ -63,7 +63,7 @@ export default function (pi: ExtensionAPI) {
 			// Bash never accesses the vault; planner/executor use canonicalized file tools.
 			// The OS denyRead additionally blocks indirect/obfuscated shell access.
 			if (command.includes("ProtonDrive") || command.includes(VAULT_ROOT)) return { block: true, reason: "Use file tools for vault access; bash vault access is disabled." };
-			if (/(^|[\s"'=(/:])\.env(?!\.(?:example|sample|template|dist)(?=$|[\s"'/]))/.test(command) || /\.(?:ssh|aws|gnupg|npmrc|netrc|git-credentials)(?=$|[\s"'/])/.test(command) || /\.pi\/agent\/(?:auth|models-store)\.json/.test(command)) return { block: true, reason: "Credential access blocked by creds-guard." };
+			if (/(^|[\s"'=(/:])\.env(?!\.(?:example|sample|template|dist)(?=\.|$|[\s"'/]))/.test(command) || /\.(?:ssh|aws|gnupg|npmrc|netrc|git-credentials)(?=$|[\s"'/])/.test(command) || /\.pi\/agent\/(?:auth|models-store)\.json/.test(command)) return { block: true, reason: "Credential access blocked by creds-guard." };
 			return;
 		}
 		if (!FILE_TOOLS.has(event.toolName)) return;
