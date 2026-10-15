@@ -6,6 +6,20 @@ It turns Pi into a small team of single-purpose agents run by one orchestrator (
 
 > This is the `~/.pi` directory of one machine, published as-is. Paths such as the Obsidian vault under ProtonDrive are personal; change them before reusing anything (see [Configuration](#configuration)).
 
+## Philosophy
+
+Coding agents are fast and confident, and both traits hurt in systems where a missed race or a reused nonce costs real money. This harness doesn't try to make the model smarter. It makes the model's mistakes cheap to catch, and it keeps you in charge of what gets built. Each principle below is backed by code, not just a prompt.
+
+1. **Enforce in code, not in prompts.** A prompt is a suggestion the model can forget under pressure. Tool allowlists, the bash sandbox, the credentials guard, mode gates and verification gates are code paths the model can't talk its way around. Prompts describe the workflow; code decides what is allowed.
+2. **Evidence over claims.** "Tests pass" means nothing on its own. An executor registers its checks before it writes code, runs them through `harness_check`, and the result is tied to a fingerprint of the exact files it ran against. Change a file afterwards and the evidence goes stale, so "done" can't drift from the code.
+3. **Fail closed.** If the sandbox can't start, bash is blocked rather than run unsandboxed. An empty tool list means zero tools, not all of them. Missing or stale evidence blocks completion. When something is uncertain, the harness stops and says so.
+4. **Small steps, one at a time.** Plans cover one goal of a mission at a time, split into tasks of about one to three files each. The smallest change that moves the goal forward wins; known gaps are written down under `## Deferred` instead of being built speculatively.
+5. **You draw the review lines.** You choose where checkpoints go and who reviews each one: you, an independent reviewer agent, or both. At a manual checkpoint you get a per-file summary with line numbers and can open the diff right in the terminal, so reviewing takes minutes, not an archaeology session.
+6. **Fresh, narrow context per agent.** Every subagent is a new process with only the context it's handed and only the tools its role needs. A planner gets no bash and no edit tool, only `write` for its plan files; a reviewer never sees the executor's own conclusions, so it can't just agree with them.
+7. **Orchestration stays visible.** Only the main session dispatches agents, so every fan-out happens where you can see it and abort it. Any subagent's full transcript, live or finished, is one keystroke away.
+8. **Quiet by default, detail on demand.** Routine results are one line. Full evidence, transcripts and diffs are kept, and shown when you ask (Ctrl+O, `/agents`, `/diff`, `harness_check status`).
+9. **Cost is your call.** The harness asks before it runs tasks in parallel, since that trades tokens for wall-clock time. It stops on provider quota or auth errors instead of retrying into a bill.
+
 ## What you get
 
 | Feature | What it does |
@@ -22,6 +36,11 @@ It turns Pi into a small team of single-purpose agents run by one orchestrator (
 | Code intelligence and debugging | The executor has Lens (diagnostics, symbols, LSP, AST search/replace) and a batch LLDB `debug` tool. |
 | Edit approval | Executors ask before editing: apply, skip, or edit without asking for this session. Asking is the default. |
 | Tagged line edits | The executor edits through `hashline_edit`: `read` tags each file's exact content, and an edit applies only if the cited lines are unchanged, so it can't silently overwrite a file that moved underneath it. |
+| Parallel batches | Between two checkpoints, `/implement` groups tasks that don't depend on each other and touch different files, then asks before running them as parallel executors in separate git worktrees. |
+| Checkpoint review | A manual checkpoint shows every changed file with `+/−` counts and changed line ranges, the commits and the check results. From there you can open the diff in pi or as an HTML page. |
+| Subagent viewer | Ctrl+Alt+A or `/agents`: every subagent run in the session, live ones included, with full transcripts (thinking, tool calls with their output, final report). |
+| Diff viewer | `/diff`: a full-screen, coloured diff with old/new line numbers, file by file, without leaving pi. |
+| Quiet results | `harness_check` results are one line each (`unit: passed (2.1s)`); expanded views list checks, not raw JSON. A failed `edit` shows the file's current nearest lines so the model fixes the edit instead of redoing the task. |
 
 ## How it fits together
 
@@ -47,7 +66,8 @@ flowchart LR
 
 - Covered by tests: modes, sandbox policy, credential guard, verification evidence, checkpoint commits, writer lock, subagent streaming and budgets, the `question` tool.
 - Measured once: on four small domain bugs with tests hidden, the harness and a plain agent on the same model both solved 8/8. The harness took about 1.5× the time and cost, and the only thing it added was recorded evidence. Harder cases are needed to tell them apart (`agent/tests/domain-eval.mjs`).
-- Not yet run end to end: `/implement` on a goal file, including parallel worktrees and checkpoint reviews.
+- Run end to end: `/implement` on a goal file through sequential tasks, an automatic review and a manual checkpoint.
+- Not yet run end to end: parallel worktree batches, and the new manual-review flow (line summary, in-pi diff, HTML diff).
 
 ## Install
 
@@ -101,6 +121,8 @@ Switch with `/mode discuss|plan|execute`, Tab, or Ctrl+Alt+M. Autocomplete moves
 | `/plan <mission>` | Plans one goal: interview, planner draft, your checkpoints, planner finalize. See [below](#micro-managed-planning-missions-and-goals). | No |
 | `/implement <request>` | Path A: one executor for a small, clear task. Path B: scout, planner, executor, reviewer for multi-component or sensitive changes. | Yes |
 | `/implement` | Opens a picker of up to 4 of this repo's goals, next goal first, then runs the chosen one (Path G) checkpoint by checkpoint, stopping for review where you asked. `/implement <mission>` limits the list to one mission. | Yes |
+| `/agents` | Subagent runs and their full transcripts (also Ctrl+Alt+A) | No |
+| `/diff [RANGE \| --worktree] [-- PATH...]` | Full-screen diff viewer | No |
 | `/build-and-review <request>` | Scout, executor, adversarial reviewer, then an executor fix run only if the reviewer found problems. | Yes |
 
 Any command stops and reports `PROVIDER UNAVAILABLE` on structured AI-provider quota or auth errors (429/402/401/403) instead of retrying the provider. Public-document fetch errors are source-access failures: continue investigating the authorized task using alternate official sources. Failed gates block dependent tasks and checkpoint approval while recovery proceeds within scope.
@@ -150,9 +172,25 @@ Type `/implement` with no arguments. It offers up to 4 goals from every mission 
 
 For each checkpoint segment:
 
-1. Run its tasks. Tasks that share a parallel group run as parallel executors in separate git worktrees and are cherry-picked back in task order.
-2. Run the checkpoint's regression checks on the merged result and record a checkpoint commit.
-3. Review using the checkpoint's mode. `manual` stops and waits for you. The next segment starts only after the review passes.
+1. Plan parallelism. The main session groups the segment's tasks into batches from each task's `Depends` and `Files`: tasks in a batch don't depend on each other and touch different files. If a batch has two or more tasks, it asks you first, showing the batches (e.g. `[T2, T3] → T4 → [T5, T6]`), because parallel runs cost more tokens. You can choose parallel, parallel for the rest of the goal, or sequential.
+2. Run the tasks. A parallel batch runs as parallel executors, each in its own git worktree. They leave the goal file alone; the main session cherry-picks their commits back in task order and ticks their boxes. A cherry-pick conflict means the files overlapped, so that task reruns on its own.
+3. Run the checkpoint's regression checks on the merged result and record a checkpoint commit.
+4. Review using the checkpoint's mode. The next segment starts only after the review passes.
+
+A `manual` review looks like this:
+
+```text
+14 files changed, +5387 −289 (uncommitted changes, /path/to/repo)
+
+src/config.rs              +102 −4    L87-94, L131-132, L139, L163-254
+src/providers/privy.rs     +595 −2    L5-6, L17-24, L76, L110-121, L196-341, L666-1022
+src/providers/arbitrum.rs  +1662 −0   L1-1662
+...
+```
+
+followed by the commits and each check's result, then a choice: approve, request changes, review the diff in pi, or open it as HTML. Line ranges point into the current checkout, so `src/config.rs:163` is where to start reading.
+
+The main session also re-reads the goal file right before each edit, because executors tick its checklist while they work. If an edit can't find its text, it re-reads and retries the edit instead of re-running the task.
 
 When the last checkpoint passes, the goal is marked `done` and the next `/plan payments-v1` moves on.
 
@@ -161,6 +199,21 @@ When the last checkpoint passes, the goal is marked `done` and the next `/plan p
 - Smallest change that moves the goal forward. No speculative abstractions, config knobs or refactors.
 - A goal doesn't have to be fully compatible with later goals. Known gaps go under `## Deferred` and get revisited when they matter.
 - Every interview decision is written into the file. Anything left open goes under `## Open questions` with a recommended default, never decided silently.
+
+## Seeing what happened
+
+| Key / command | Shows |
+|---|---|
+| Ctrl+O | Expands every tool result in the chat |
+| Ctrl+Alt+A or `/agents` | A full-screen list of this session's subagent runs; live ones update in place. Enter opens a run's whole transcript: task, thinking, assistant text, every tool call with its output, the final report. While a run is live, the transcript follows its newest output until you scroll up. |
+| `/diff [RANGE \| --worktree] [-- PATH...]` | A full-screen diff. With no range it shows uncommitted changes, or the last commit if there are none. The file list has `+/−` and changed line ranges; Enter shows a file's coloured diff with old and new line numbers. |
+| `node agent/scripts/review-diff.mjs [--html] …` | The same summary in a normal shell, and with `--html` a self-contained diff page in `/tmp/pi-review/` |
+
+Keys in both viewers: ↑↓ or j/k scroll, PgUp/PgDn page, g/G top/end, Esc back. The diff viewer adds ←→ to pan wide lines and n/p for the next or previous file.
+
+For uncommitted work, name the paths: `/diff --worktree -- src migrations`. Untracked files are included only under the paths you give, so scratch files stay out, and key and env files (`*.pem`, `*.key`, `.env*`) are never shown.
+
+Long question lists, like the `/implement` goal picker, scroll when they're taller than the terminal: the options stay in view and PgUp/PgDn scroll the context above them.
 
 ## Agents
 
@@ -248,16 +301,19 @@ Restart Pi or run `/reload` after changing extensions or `settings.json`.
     ├── agents/               # agent definitions + models/runtime/planner config
     ├── prompts/              # slash commands: plan, implement, build-and-review, discuss
     ├── extensions/
-    │   ├── subagent/         # subagent tool: dispatch, streaming, budgets, plan storage
+    │   ├── subagent/         # subagent tool: dispatch, streaming, budgets, plan storage, run viewer
     │   ├── sandbox/          # Seatbelt bash, harness_check, debug
     │   ├── modes/            # discuss / plan / execute switch + footer speed
     │   ├── creds-guard.ts    # tool-level credentials and vault guard
     │   ├── compact-read.ts   # compact display for read results
     │   ├── question.ts       # radio/checkbox questions with a type-your-own row
     │   ├── implement-picker.ts # bare /implement opens a goal picker
+    │   ├── diff-viewer.ts    # /diff and the review_diff tool
+    │   ├── edit-mismatch.ts  # nearest current lines when an edit's text is gone
     │   ├── hashline/         # executor-only tagged read + hashline_edit (loaded by the dispatcher)
     │   ├── advisor-patch-guard.ts
-    │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed, hashline
+    │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed, hashline, diff parsing
+    ├── scripts/review-diff.mjs # checkpoint review summary and HTML diff
     ├── patches/              # local fix for pi-advisor-flow's missing session id
     ├── npm/                  # Pi packages: pi-advisor-flow, pi-lens, pi-web-access
     ├── skills/ethskills/     # git submodule (excluded from prompts by default)
@@ -273,6 +329,7 @@ Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harnes
 
 ```sh
 for t in harness.test modes-check verification-check subagent-progress-check hashline-check implement-picker-check \
+         subagent-viewer-check diff-viewer-check edit-mismatch-check \
          debugger-check edit-approval-check advisor-config-check advisor-patch-guard \
          advisor-session-header typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
@@ -283,10 +340,13 @@ done
 |---|---|
 | `harness.test.mjs` | Command policy, path guards, mode gates, zero-tool dispatch, sandbox policy, plan storage, extension loading |
 | `modes-check.mjs` | Mode switching, tool gates, prompt-section stability, keybindings |
-| `verification-check.mjs` | Evidence freshness, failure evidence, scoped checkpoint commits, writer lock |
+| `verification-check.mjs` | Evidence freshness, failure evidence, scoped checkpoint commits, writer lock, concise result rendering |
 | `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection |
 | `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files |
 | `implement-picker-check.mjs` | Goal discovery by repo path across projects, next-goal ordering, input rewrite, pass-through of normal requests |
+| `subagent-viewer-check.mjs` | Transcript contents (tool output included), live runs, list/transcript navigation and height limits |
+| `diff-viewer-check.mjs` | Worktree diffs with untracked files only under given paths, secret files excluded, line ranges, viewer navigation |
+| `edit-mismatch-check.mjs` | A failed edit shows the right current line and other errors pass through |
 | `edit-approval-check.mjs` | Default prompts, denial/cancellation, session opt-out/reset, and executor approval before writing |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |
 | `advisor-*.mjs` | Advisor config validation and the session-id patch |
@@ -305,6 +365,10 @@ done
 | `debug` fails on macOS | Start Pi with `pi --debug-unsandboxed`, and grant Developer Tools permission if asked. |
 | Advisor calls fail with `MissingSessionID` | The patch was lost after `pi update`. Run `node agent/patches/advisor-session-header.mjs`, then `/reload`. |
 | Typecheck says `SKIPPED` | `npm i -g typescript` |
+| `Could not find edits[N]` on a goal file | The file changed since the model last read it, usually because an executor ticked a box. The error now lists the current nearest lines; the model should re-read and retry the edit, not redo the task. |
+| A question list runs off the screen | It scrolls: PgUp/PgDn move the context, ↑↓ the options. `/reload` if it doesn't. |
+| Can't see what a subagent did | Ctrl+Alt+A (or `/agents`), then Enter on the run. |
+| `/diff` misses new files | Untracked files need paths: `/diff --worktree -- <dir>`. |
 
 ## Versioning
 
