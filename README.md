@@ -67,7 +67,7 @@ flowchart LR
 - Covered by tests: modes, sandbox policy, credential guard, verification evidence, checkpoint commits, writer lock, subagent streaming and budgets, the `question` tool.
 - Measured once: on four small domain bugs with tests hidden, the harness and a plain agent on the same model both solved 8/8. The harness took about 1.5× the time and cost, and the only thing it added was recorded evidence. Harder cases are needed to tell them apart (`agent/tests/domain-eval.mjs`).
 - Run end to end: `/implement` on a goal file through sequential tasks, an automatic review and a manual checkpoint.
-- Not yet run end to end: parallel worktree batches, and the new manual-review flow (line summary, in-pi diff, HTML diff).
+- Parallel worktrees: a sandboxed commit from a worktree and the cherry-pick back are tested (`worktree-sandbox-check.mjs`). A full parallel `/implement` batch has not been run yet, nor has the new manual-review flow (line summary, in-pi diff, HTML diff).
 
 ## Install
 
@@ -173,7 +173,7 @@ Type `/implement` with no arguments. It offers up to 4 goals from every mission 
 For each checkpoint segment:
 
 1. Plan parallelism. The main session groups the segment's tasks into batches from each task's `Depends` and `Files`: tasks in a batch don't depend on each other and touch different files. If a batch has two or more tasks, it asks you first, showing the batches (e.g. `[T2, T3] → T4 → [T5, T6]`), because parallel runs cost more tokens. You can choose parallel, parallel for the rest of the goal, or sequential.
-2. Run the tasks. A parallel batch runs as parallel executors, each in its own git worktree. They leave the goal file alone; the main session cherry-picks their commits back in task order and ticks their boxes. A cherry-pick conflict means the files overlapped, so that task reruns on its own.
+2. Run the tasks. A parallel batch runs as parallel executors, each in its own git worktree under `/tmp/pi-worktrees/`. The sandbox opens just the git folders a worktree commit needs (in the main repo's `.git`: the worktree's admin folder, `objects`, `refs`, `logs`), never its config or hooks. They leave the goal file alone; the main session cherry-picks their commits back in task order and ticks their boxes. A cherry-pick conflict means the files overlapped, so that task reruns on its own.
 3. Run the checkpoint's regression checks on the merged result and record a checkpoint commit.
 4. Review using the checkpoint's mode. The next segment starts only after the review passes.
 
@@ -329,7 +329,7 @@ Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harnes
 
 ```sh
 for t in harness.test modes-check verification-check subagent-progress-check hashline-check implement-picker-check \
-         subagent-viewer-check diff-viewer-check edit-mismatch-check \
+         subagent-viewer-check diff-viewer-check edit-mismatch-check worktree-sandbox-check \
          debugger-check edit-approval-check advisor-config-check advisor-patch-guard \
          advisor-session-header typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
@@ -346,6 +346,7 @@ done
 | `implement-picker-check.mjs` | Goal discovery by repo path across projects, next-goal ordering, input rewrite, pass-through of normal requests |
 | `subagent-viewer-check.mjs` | Transcript contents (tool output included), live runs, list/transcript navigation and height limits |
 | `diff-viewer-check.mjs` | Worktree diffs with untracked files only under given paths, secret files excluded, line ranges, viewer navigation |
+| `worktree-sandbox-check.mjs` | A sandboxed executor can commit from a git worktree; the main repo's config and hooks stay protected; the commit cherry-picks back |
 | `edit-mismatch-check.mjs` | A failed edit shows the right current line and other errors pass through |
 | `edit-approval-check.mjs` | Default prompts, denial/cancellation, session opt-out/reset, and executor approval before writing |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |

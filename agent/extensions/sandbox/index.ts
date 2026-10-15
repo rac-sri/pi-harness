@@ -41,9 +41,9 @@
  * Linux also requires: bubblewrap, socat, ripgrep
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type BashOperations, CONFIG_DIR_NAME, createBashTool, createLocalBashOperations, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -78,6 +78,22 @@ const DEFAULT_CONFIG: SandboxConfig = {
 		denyWrite: [".env", ".env.*", "*.pem", "*.key"],
 	},
 };
+
+/**
+ * Extra write paths for a linked git worktree. Its index and HEAD live in the main repository's
+ * `.git/worktrees/<name>`, and commits write objects, refs and reflogs to the shared `.git`, all
+ * outside the worktree. Only those folders are opened; hooks and config stay read-only.
+ * A normal checkout (or no repository) needs nothing extra.
+ */
+export function worktreeGitPaths(cwd: string): string[] {
+	let gitDir: string, commonDir: string;
+	try {
+		[gitDir, commonDir] = execFileSync("git", ["-C", cwd, "rev-parse", "--git-dir", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+			.trim().split("\n").map(dir => resolve(cwd, dir));
+	} catch { return []; }
+	if (!gitDir || !commonDir || gitDir === commonDir) return [];
+	return [gitDir, join(commonDir, "objects"), join(commonDir, "refs"), join(commonDir, "logs")];
+}
 
 function loadConfig(cwd: string): SandboxConfig {
 	const projectConfigPath = join(cwd, CONFIG_DIR_NAME, "sandbox.json");
@@ -327,6 +343,8 @@ export default function (pi: ExtensionAPI) {
 				enableWeakerNestedSandbox?: boolean;
 			};
 
+			const worktreePaths = worktreeGitPaths(ctx.cwd);
+			if (worktreePaths.length) config.filesystem = { ...config.filesystem, allowWrite: [...config.filesystem.allowWrite, ...worktreePaths] };
 			await SandboxManager.initialize({
 				network: config.network,
 				filesystem: config.filesystem,
