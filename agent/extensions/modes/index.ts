@@ -60,7 +60,7 @@ let mode: Mode = DEFAULT_MODE;
 let saved: string[] | undefined; // full active set captured when restricting
 
 // Read-only tools stay available in DISCUSS: inspect the working tree, never run or change it.
-const READ_ONLY_TOOLS = new Set(["question", "read", "grep", "find", "ls", "subagent", "ask_advisor", "web_search", "fetch_content", "get_search_content", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
+const READ_ONLY_TOOLS = new Set(["question", "review_diff", "read", "grep", "find", "ls", "subagent", "ask_advisor", "web_search", "fetch_content", "get_search_content", "lens_diagnostics", "symbol_search", "ast_grep_search", "ast_grep_outline", "module_report", "read_symbol", "read_enclosing", "project_report", "effective_config", "lsp_navigation"]);
 const READ_ONLY_LSP_OPERATIONS = new Set(["definition", "typeDefinition", "declaration", "references", "hover", "signatureHelp", "documentSymbol", "findSymbol", "workspaceSymbol", "implementation", "prepareCallHierarchy", "incomingCalls", "outgoingCalls", "workspaceDiagnostics", "capabilities"]);
 
 export default function (pi: ExtensionAPI) {

@@ -1,0 +1,46 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { commonDir, createDiffViewer, parseDiffArgs } from "../extensions/diff-viewer.ts";
+import { diffText, parseDiff, summary } from "../extensions/lib/review-diff.ts";
+
+const repo = fs.mkdtempSync(path.join(os.tmpdir(), "diff-viewer-"));
+const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t");
+fs.mkdirSync(path.join(repo, "src"));
+fs.writeFileSync(path.join(repo, "src/a.rs"), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+git("add", "."); git("commit", "-qm", "base");
+const lines = fs.readFileSync(path.join(repo, "src/a.rs"), "utf8").split("\n");
+lines[2] = "changed 3"; lines.splice(15, 1);
+fs.writeFileSync(path.join(repo, "src/a.rs"), lines.join("\n"));
+fs.writeFileSync(path.join(repo, "src/new.rs"), "fn main() {}\n");
+fs.writeFileSync(path.join(repo, "src/admin.pem"), "SECRET\n");
+fs.writeFileSync(path.join(repo, "scratch.txt"), "unrelated\n");
+
+const source = parseDiffArgs("-- src", repo, repo);
+assert.equal(source.worktree, true, "dirty checkout defaults to uncommitted changes");
+const files = parseDiff(diffText(source, 0));
+const names = files.map(f => f.file).sort();
+assert.deepEqual(names, ["src/a.rs", "src/new.rs"], "untracked files under PATHs are included; secrets and other paths are not");
+const a = files.find(f => f.file === "src/a.rs");
+assert.equal(a.added, 1); assert.equal(a.removed, 2);
+assert.match(summary(files, source), /src\/a\.rs  \+1 −2  L3, L15 \(deletion\)/, "summary lists changed line ranges, deletions at the line before");
+assert.equal(commonDir(["x/y/a.rs", "x/y/z/b.rs"]), "x/y/");
+assert.equal(commonDir(["a.rs", "x/b.rs"]), "");
+
+const theme = { fg: (_c, t) => t, bold: t => t };
+let closed = false;
+const viewer = createDiffViewer(parseDiff(diffText(source, 3)), "uncommitted changes", theme, () => { closed = true; }, () => 14);
+assert.match(viewer.render(80).join("\n"), /files in src\/[\s\S]*› a\.rs/, "list shows paths relative to the shared directory");
+viewer.handleInput("\r");
+const opened = viewer.render(80);
+assert.ok(opened.length <= 14, "diff fits the terminal height");
+assert.match(opened.join("\n"), / 3 +│-line 3/); assert.match(opened.join("\n"), / +3 │\+changed 3/);
+viewer.handleInput("n");
+assert.match(viewer.render(80).join("\n"), /new\.rs[\s\S]*1 │\+fn main/, "n moves to the next file");
+viewer.handleInput("\x1b"); viewer.handleInput("\x1b");
+assert.ok(closed, "Esc goes back, then closes");
+fs.rmSync(repo, { recursive: true });
+console.log("Passed 12 diff viewer checks.");
