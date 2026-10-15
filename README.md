@@ -20,6 +20,7 @@ It turns Pi into a small team of single-purpose agents run by one orchestrator (
 | `question` tool | Every interview question appears as a keyboard list: radio buttons for one answer, checkboxes (`multiSelect`) when several apply. The recommended answer comes first, and the last row is always "type your own answer". Available in all modes. |
 | Advisor | `pi-advisor-flow` pairs the main model with a stronger reviewer that steps in after repeated failures. |
 | Code intelligence and debugging | The executor has Lens (diagnostics, symbols, LSP, AST search/replace) and a batch LLDB `debug` tool. |
+| Edit approval | Executors ask before editing: apply, skip, or edit without asking for this session. Asking is the default. |
 | Tagged line edits | The executor edits through `hashline_edit`: `read` tags each file's exact content, and an edit applies only if the cited lines are unchanged, so it can't silently overwrite a file that moved underneath it. |
 
 ## How it fits together
@@ -102,7 +103,7 @@ Switch with `/mode discuss|plan|execute`, Tab, or Ctrl+Alt+M. Autocomplete moves
 | `/implement` | Opens a picker of up to 4 of this repo's goals, next goal first, then runs the chosen one (Path G) checkpoint by checkpoint, stopping for review where you asked. `/implement <mission>` limits the list to one mission. | Yes |
 | `/build-and-review <request>` | Scout, executor, adversarial reviewer, then an executor fix run only if the reviewer found problems. | Yes |
 
-Any command stops and reports `PROVIDER UNAVAILABLE` on quota or auth errors (429/402/401/403) instead of retrying.
+Any command stops and reports `PROVIDER UNAVAILABLE` on structured AI-provider quota or auth errors (429/402/401/403) instead of retrying the provider. Public-document fetch errors are source-access failures: continue investigating the authorized task using alternate official sources. Failed gates block dependent tasks and checkpoint approval while recovery proceeds within scope.
 
 ## Micro-managed planning: missions and goals
 
@@ -272,7 +273,7 @@ Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harnes
 
 ```sh
 for t in harness.test modes-check verification-check subagent-progress-check hashline-check implement-picker-check \
-         debugger-check advisor-config-check advisor-patch-guard \
+         debugger-check edit-approval-check advisor-config-check advisor-patch-guard \
          advisor-session-header typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
 done
@@ -286,6 +287,7 @@ done
 | `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection |
 | `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files |
 | `implement-picker-check.mjs` | Goal discovery by repo path across projects, next-goal ordering, input rewrite, pass-through of normal requests |
+| `edit-approval-check.mjs` | Default prompts, denial/cancellation, session opt-out/reset, and executor approval before writing |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |
 | `advisor-*.mjs` | Advisor config validation and the session-id patch |
 | `typecheck.mjs` | Strict TypeScript over all extensions. Prints `SKIPPED` if `tsc` isn't installed. |

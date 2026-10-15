@@ -1,5 +1,5 @@
 {
-  "executor": "lmstudio/qwen3.8-27b-splash",
+  "executor": "opencode-go/qwen3.8-flash",
   "advisor": "openai/gpt-6-astra",
   "advisorPlanGate": false,
   "advisorCompletionGate": false,

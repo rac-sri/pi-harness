@@ -167,7 +167,7 @@ if (process.argv.includes("--mode")) {
 	check(hashlineArgs.includes("--no-extensions") && hashlineArgs.includes(path.join(root, "extensions/hashline/tool.ts")) && hashlineArgs.includes(path.join(root, "npm/node_modules/pi-lens/dist/index.js")), "executor loads hashline tools with Lens and no unrelated plugins");
 
 	let subagentTool;
-	subagent.default({ on() {}, registerTool: tool => { subagentTool = tool; } });
+	subagent.default({ on() {}, registerShortcut() {}, registerCommand() {}, registerTool: tool => { subagentTool = tool; } });
 	const chainResult = await subagentTool.execute("test", { chain: [{ agent: "discuss", task: "RETURN_LITERALS" }, { agent: "discuss", task: "Prior: {previous}" }] }, undefined, undefined, { cwd: root, hasUI: false });
 	check(JSON.parse(chainResult.content[0].text).includes("Task: Prior: $& $` $'"), "chain replacement preserves dollar tokens");
 	const controller = new AbortController();

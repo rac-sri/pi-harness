@@ -78,7 +78,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const context = missions.map(mission => `# ${mission.slug}\n${mission.goals.map(goal => `${goal.number} ${goal.name} · ${goal.status}`).join("\n")}`).join("\n");
 		const options = goals.map((goal, i) => ({ label: `${goal.number} ${goal.name}${i === 0 ? " (next)" : ""}`, description: `${goal.mission} · ${goal.status}${runnable(goal) ? "" : " · not planned yet: runs /plan for it first"}` }));
-		const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker("Which goal do you want to implement?", options, false, theme, done, () => tui.requestRender(), context));
+		const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker("Which goal do you want to implement?", options, false, theme, done, () => tui.requestRender(), context, () => tui.terminal.rows));
 		if (!result) return { action: "handled" };
 		if (result.other) {
 			const request = (await ctx.ui.input("What should be implemented?", "Describe the change"))?.trim();

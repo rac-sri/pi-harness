@@ -26,6 +26,7 @@ const CONTEXT_TAG: Record<Mode, string> = {
 const SCOPE_RULES = `- Do exactly what the user asked, at the size they asked for. A question gets an answer; a diagram gets a diagram shown inline; "revert" means restore the files with git.
 - Prefer the smallest change that works. Do not add files, migrations, tables, plan documents, scripts, or abstractions the user did not ask for. When a bigger change seems needed, say so in one line and ask first.
 - Re-read the user's latest message before each action and check that the action serves it.
+- Authorization persists for investigation and recovery within the requested task. A failed public-document fetch (HTTP 401/403/429 or timeout) is not an AI-provider failure: try other official sources with available tools, respecting access controls, before reporting an evidence gap. Keep verification gates pending until evidence passes; do not ask for renewed authorization merely because an attempt failed.
 - If a subagent or advisor call fails (429/402/quota/timeout), do not retry or route around it: do the work directly if small, otherwise tell the user what failed and stop.`;
 
 // Implementation plans always go through the mission/goal planner, whether or not the user typed /plan.

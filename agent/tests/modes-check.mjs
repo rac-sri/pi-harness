@@ -128,7 +128,7 @@ check((await run({ indices: [], other: true }, "")).details.answers === null, "e
 check((await run({ indices: [0], other: false }, "", false, "rpc")).content[0].text.includes("plain text"), "question falls back to plain text outside the TUI");
 let pickerCalls = 0, lastView = "";
 const interview = (decides, result, extra = {}) => questionTool.execute("q", { question: `Q ${decides}?`, options: opts, ledger: "test/01", decides, ...extra }, undefined, undefined, { hasUI: true, mode: "tui", ui: {
-  custom: async factory => { pickerCalls++; lastView = factory({ requestRender() {} }, plain, {}, () => {}).render(100).join("\n"); return result; }, input: async () => "" } });
+  custom: async factory => { pickerCalls++; lastView = factory({ requestRender() {}, terminal: { rows: 100 } }, plain, {}, () => {}).render(100).join("\n"); return result; }, input: async () => "" } });
 const firstAnswer = await interview("enqueue-failure", { indices: [0], other: false });
 check(firstAnswer.content[0].text.includes("1. enqueue-failure: Yes (Recommended)"), "answer is recorded in the ledger and returned to the model");
 const repeat = await interview("enqueue-failure", { indices: [1], other: false });

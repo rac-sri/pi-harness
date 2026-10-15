@@ -36,7 +36,7 @@ if (process.argv.includes("--mode")) {
   }
 } else {
   const subagent = await jiti.import(path.join(root, "extensions/subagent/index.ts"));
-  let tool; subagent.default({ on() {}, registerTool: definition => { tool = definition; } });
+  let tool; subagent.default({ on() {}, registerShortcut() {}, registerCommand() {}, registerTool: definition => { tool = definition; } });
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-progress-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = fixture;
@@ -46,6 +46,18 @@ if (process.argv.includes("--mode")) {
   const details = results => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results });
   let checks = 0;
   try {
+    const failedResult = { agent: "executor", exitCode: 1, stopReason: "error", stderr: "", messages: [] };
+    for (const output of ["Public-document fetch returned HTTP 403", "Source API rate limit: 429", "Investigating quota handling at line 401"]) {
+      const result = { ...failedResult, messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: output }] }] };
+      assert.equal(subagent.getResultOutput(result), output); checks++;
+      assert.equal(subagent.getResultOutput({ ...failedResult, stderr: output }), output); checks++;
+    }
+    for (const errorMessage of ["HTTP 403: authentication failed", "429 rate limit", "402 insufficient account funds", "401 unauthorized", "usage limit exceeded"]) {
+      const result = { ...failedResult, errorMessage, messages: [{ role: "assistant", stopReason: "error", errorMessage, content: [] }] };
+      assert.match(subagent.getResultOutput(result), /PROVIDER UNAVAILABLE for executor/); checks++;
+    }
+    const rejectedFetch = { ...failedResult, errorMessage: "Executor completion rejected: missing evidence.", messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Public-document fetch returned HTTP 403" }] }] };
+    assert.doesNotMatch(subagent.getResultOutput(rejectedFetch), /PROVIDER UNAVAILABLE/); checks++;
     config({ updateIntervalMs: 1 });
     const updates = [];
     const result = await subagent.runSingleAgent(fixture, {}, [agent], "test", "STREAM", undefined, undefined, undefined, partial => {

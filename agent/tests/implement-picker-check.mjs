@@ -34,7 +34,7 @@ try {
 	let handler; picker.default({ on: (name, fn) => { if (name === "input") handler = fn; } });
 	let shown, notified;
 	const ctx = (pick, typed) => ({ cwd, hasUI: true, mode: "tui", ui: { notify: message => { notified = message; }, input: async () => typed,
-		custom: async factory => { shown = factory({ requestRender() {} }, { fg: (_c, t) => t, bold: t => t }, {}, () => {}).render(100).join("\n"); return pick; } } });
+		custom: async factory => { shown = factory({ requestRender() {}, terminal: { rows: 100 } }, { fg: (_c, t) => t, bold: t => t }, {}, () => {}).render(100).join("\n"); return pick; } } });
 	const run = (text, pick, typed, source = "interactive") => handler({ text, source }, ctx(pick, typed));
 
 	const chosen = await run("/implement", { indices: [0], other: false });

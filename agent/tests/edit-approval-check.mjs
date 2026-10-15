@@ -96,7 +96,7 @@ if (process.argv.includes("--mode")) {
     fs.writeFileSync(path.join(fixture, "agents/executor.md"), "---\nname: executor\ndescription: Test\ntools: write\n---\nTest executor.");
     let tool;
     const mainHooks = new Map();
-    subagent.default({ on: (name, handler) => mainHooks.set(name, handler), registerTool: definition => { tool = definition; } });
+    subagent.default({ on: (name, handler) => mainHooks.set(name, handler), registerShortcut() {}, registerCommand() {}, registerTool: definition => { tool = definition; } });
     let prompts = 0;
     const ctx = { cwd: fixture, hasUI: true, ui: { select: async (title, choices) => {
       prompts++;

@@ -18,21 +18,24 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	CONFIG_DIR_NAME,
 	type ExtensionAPI,
+	type ExtensionContext,
 	getAgentDir,
 	getMarkdownTheme,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Key, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { plannerPrompt } from "./plans.ts";
 import { loadRuntimeConfig } from "./runtime.ts";
+import { createViewer, type ViewerRun } from "./viewer.ts";
 import { acquireWriter } from "../lib/writer-lock.ts";
 import { TokenSpeed } from "../lib/token-speed.ts";
 import { FILE_MUTATING_TOOLS } from "../lib/tools.ts";
@@ -160,6 +163,7 @@ interface UsageStats {
 }
 
 interface SingleResult {
+	id?: string;
 	agent: string;
 	agentSource: "user" | "project" | "unknown";
 	task: string;
@@ -187,6 +191,20 @@ interface SubagentDetails {
 	results: SingleResult[];
 }
 
+/** Runs started by this process, live objects, for the viewer. Older runs come from the session. */
+const liveRuns: SingleResult[] = [];
+
+/** Session runs in start order: saved results, with this process's live copies taking precedence. */
+function sessionRuns(entries: unknown[]): ViewerRun[] {
+	const saved = entries.flatMap((entry: any) => entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "subagent"
+		? (entry.message.details?.results ?? []) as SingleResult[] : []);
+	const live = new Set(liveRuns.map(run => run.id));
+	const seen = new Set<string>();
+	const runs = [...saved.filter(run => !run.id || !live.has(run.id)), ...liveRuns]
+		.filter(run => !run.id || (!seen.has(run.id) && seen.add(run.id)));
+	return runs.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+}
+
 function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -203,13 +221,15 @@ function isFailedResult(result: SingleResult): boolean {
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 }
 
-// Quota/billing/auth failures are not transient: retrying or re-dispatching burns turns.
+// Match provider failures only in structured model errors, never task/tool output.
 const PROVIDER_UNAVAILABLE = /\b(?:429|402|401|403)\b|usage limit|insufficient (?:account )?funds|quota|rate limit/i;
 
-function getResultOutput(result: SingleResult): string {
+export function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		const output = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
-		if (!PROVIDER_UNAVAILABLE.test(output)) return output;
+		const providerError = result.messages.some(message => message.role === "assistant"
+			&& message.stopReason === "error" && PROVIDER_UNAVAILABLE.test(message.errorMessage ?? ""));
+		if (!providerError) return output;
 		return `${output}\nPROVIDER UNAVAILABLE for ${result.agent}: do not retry or dispatch other subagents on this provider. Do the user's request directly if it is small; otherwise report this failure to the user and stop.`;
 	}
 	return getFinalOutput(result.messages) || "(no output)";
@@ -364,6 +384,7 @@ export async function runSingleAgent(
 	let lastUpdate = 0;
 
 	const currentResult: SingleResult = {
+		id: randomUUID(),
 		agent: agentName,
 		agentSource: agent.source,
 		task,
@@ -377,6 +398,7 @@ export async function runSingleAgent(
 		step,
 	};
 
+	liveRuns.push(currentResult);
 	const emitUpdate = (force = false) => {
 		currentResult.elapsedMs = Date.now() - currentResult.startedAt!;
 		if (!force && Date.now() - lastUpdate < (runtime?.updateIntervalMs ?? 150)) return;
@@ -663,7 +685,13 @@ const SubagentParams = Type.Object({
 export default function (pi: ExtensionAPI) {
 	let selectEdit: Parameters<typeof createEditApproval>[0] = async () => undefined;
 	const editApproval = createEditApproval((request, approvalSignal) => selectEdit(request, approvalSignal));
-	pi.on("session_start", async () => { editApproval.reset(); });
+	pi.on("session_start", async () => { editApproval.reset(); liveRuns.length = 0; });
+	const openViewer = async (ctx: ExtensionContext) => {
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		await ctx.ui.custom<void>((tui, theme, _keys, done) => createViewer(() => sessionRuns(ctx.sessionManager.getEntries()), theme, formatToolCall, done, () => tui.requestRender(), () => tui.terminal.rows));
+	};
+	pi.registerShortcut(Key.ctrlAlt("a"), { description: "Show subagent runs and transcripts", handler: openViewer });
+	pi.registerCommand("agents", { description: "Show subagent runs and their full transcripts", handler: async (_args, ctx) => openViewer(ctx) });
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -990,6 +1018,7 @@ export default function (pi: ExtensionAPI) {
 					if (output) container.addChild(new Text(theme.fg("toolOutput", expanded ? output : output.split("\n").slice(-4).join("\n")), 0, 0));
 					container.addChild(new Spacer(1));
 				}
+				container.addChild(new Text(theme.fg("muted", "Ctrl+Alt+A: full live transcripts"), 0, 0));
 				return container;
 			}
 			const mdTheme = getMarkdownTheme();
@@ -1071,7 +1100,7 @@ export default function (pi: ExtensionAPI) {
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 				else {
 					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
-					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand · Ctrl+Alt+A full transcripts)")}`;
 				}
 				const usageStr = formatUsageStats(r.usage, r.model);
 				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
@@ -1170,7 +1199,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				const usageStr = formatUsageStats(aggregateUsage(details.results));
 				if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
-				text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				text += `\n${theme.fg("muted", "(Ctrl+O to expand · Ctrl+Alt+A full transcripts)")}`;
 				return new Text(text, 0, 0);
 			}
 
@@ -1260,7 +1289,7 @@ export default function (pi: ExtensionAPI) {
 					const usageStr = formatUsageStats(aggregateUsage(details.results));
 					if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
 				}
-				if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand · Ctrl+Alt+A full transcripts)")}`;
 				return new Text(text, 0, 0);
 			}
 

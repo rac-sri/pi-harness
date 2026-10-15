@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { getAgentDir, type BashOperations, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { canonicalPath, pathDenied } from "../creds-guard.ts";
 import { repositoryRoot } from "./writer-lock.ts";
 
@@ -196,10 +197,42 @@ export async function runHarnessAction(input: HarnessInput, cwd: string, ops: Ba
 	} finally { fs.closeSync(lock); fs.unlinkSync(lockFile); }
 }
 
+export function formatHarnessResult(input: HarnessInput, result: Awaited<ReturnType<typeof runHarnessAction>>, preview = "") {
+	if (input.action === "status") return JSON.stringify(result, null, 2);
+	if ("evidence" in result && !Array.isArray(result.evidence)) {
+		const evidence = result.evidence;
+		if (evidence.passed) return `${input.check}: passed (${(evidence.durationMs / 1000).toFixed(1)}s).`;
+		const reason = result.failure ?? (evidence.before !== evidence.after
+			? "Checkout changed during verification."
+			: `Exit code: ${evidence.exitCode ?? "unavailable"}.`);
+		return `${input.check}: failed. ${reason}\nLog: ${evidence.outputPath}${preview ? "\n" + preview.slice(-2000) : ""}`;
+	}
+	if ("checks" in result) {
+		if (input.action === "complete") return `${result.run}: ${result.phase}. All ${result.checks.length} checks passed.`;
+		if (input.action === "checkpoint") return `${result.run}: committed ${result.commit?.slice(0, 12)}. All ${result.checks.length} checks passed.`;
+		if (input.action === "define") return `${result.run}: defined ${result.checks.length} required checks.`;
+	}
+	return `${input.run}: ${result.phase}.`;
+}
+
+/** Expanded view: one line per check plus file paths; the full record stays in state.json. */
+function expandedDetails(details: Awaited<ReturnType<typeof runHarnessAction>>, theme: { fg: (color: any, text: string) => string }) {
+	const lines: string[] = [];
+	const latest = (check: string) => "checks" in details ? details.evidence.filter(e => e.check === check).at(-1) : undefined;
+	if ("checks" in details) for (const check of details.checks) {
+		const e = latest(check.id);
+		const mark = !e ? theme.fg("dim", "·") : e.passed ? theme.fg("success", "✓") : theme.fg("error", "✗");
+		lines.push(`${mark} ${check.id}${e ? theme.fg("dim", ` ${(e.durationMs / 1000).toFixed(1)}s`) : ""} ${theme.fg("muted", check.property)}`);
+	}
+	else if ("evidence" in details && !Array.isArray(details.evidence)) lines.push(theme.fg("dim", `log: ${details.evidence.outputPath}`));
+	if ("stateFile" in details && details.stateFile) lines.push(theme.fg("dim", `state: ${details.stateFile}`));
+	return lines.join("\n");
+}
+
 export function registerVerification(pi: ExtensionAPI, getOperations: () => BashOperations) {
 	pi.registerTool({
 		name: "harness_check", label: "Verification checkpoint",
-		description: "Define an immutable correctness contract and required checks, mark implemented, run sandboxed verification with durable evidence, inspect status, validate completion, or commit explicitly scoped files. Use one run per checkpoint. Evidence must match the current checkout; failed/stale checks block completion.",
+		description: "Define an immutable correctness contract and required checks, mark implemented, run sandboxed verification with durable evidence, inspect status, validate completion, or commit explicitly scoped files. Use one run per checkpoint. Evidence must match the current checkout; failed/stale checks block completion. Routine results are concise; status returns full evidence and log paths for review.",
 		parameters: Type.Object({
 			action: Type.Union(["define", "implemented", "verify", "status", "complete", "checkpoint"].map(value => Type.Literal(value))),
 			run: Type.String(), contract: Type.Optional(Type.String()),
@@ -207,18 +240,33 @@ export function registerVerification(pi: ExtensionAPI, getOperations: () => Bash
 			check: Type.Optional(Type.String()), seed: Type.Optional(Type.String()), timeoutSeconds: Type.Optional(Type.Number()),
 			files: Type.Optional(Type.Array(Type.String())), message: Type.Optional(Type.String()),
 		}),
+		renderCall(args, theme) {
+			const label = args.action === "verify" ? `CHECK ${args.check ?? "…"}` : `CHECK ${args.action ?? "…"}`;
+			return new Text(theme.fg("toolTitle", theme.bold(label)) + theme.fg("dim", ` · ${args.run ?? "…"}`), 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+			if (isPartial) return new Text(theme.fg("dim", text || "Running…"), 0, 0);
+			const details = result.details as Awaited<ReturnType<typeof runHarnessAction>> | undefined;
+			let summary = text;
+			if (details?.phase) {
+				if (context.args.action === "status" && "checks" in details) {
+					summary = `${details.run}: ${details.phase} · ${details.checks.length} required checks · evidence ${"evidenceFresh" in details && details.evidenceFresh ? "fresh" : "stale or incomplete"}`;
+				} else {
+					summary = formatHarnessResult(context.args, details);
+				}
+			}
+			if (expanded) return new Text(summary + (details ? "\n" + expandedDetails(details, theme) : ""), 0, 0);
+			return new Text(theme.fg(context.isError ? "error" : "toolOutput", summary.split("\n")[0]) + (context.isError && summary.includes("\n") ? "\n" + summary.split("\n").slice(1, 4).join("\n") : ""), 0, 0);
+		},
 		async execute(_id, input, signal, onUpdate, ctx) {
 			let preview = "";
+			if (input.action === "verify") onUpdate?.({ content: [{ type: "text", text: `Running ${input.check}…` }], details: {} });
 			const result = await runHarnessAction(input, ctx.cwd, getOperations(), signal, undefined, text => {
 				preview = (preview + text).slice(-4000);
-				onUpdate?.({ content: [{ type: "text", text: preview }], details: {} });
 			});
-			// Keep routine transitions small in the model context; full records remain
-			// on disk and are returned by status for independent review.
-			const display = input.action !== "status" && "checks" in result
-				? { run: result.run, phase: result.phase, stateFile: result.stateFile, verifiedTree: result.verifiedTree, commit: result.commit, requiredChecks: result.checks.map(check => check.id) }
-				: result;
-			return { content: [{ type: "text", text: JSON.stringify(display, null, 2) }], details: result, isError: "evidence" in result && !Array.isArray(result.evidence) && !result.evidence.passed };
+			// Full evidence remains on disk and in details for independent review.
+			return { content: [{ type: "text", text: formatHarnessResult(input, result, preview) }], details: result, isError: "evidence" in result && !Array.isArray(result.evidence) && !result.evidence.passed };
 		},
 	});
 }

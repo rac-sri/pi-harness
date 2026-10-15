@@ -37,11 +37,15 @@ function ledgerSummary(entries: Decision[]) {
 }
 
 /** Keyboard-driven list. Exported for tests; rendering is plain text plus theme colours. */
-export function createPicker(question: string, options: Option[], multi: boolean, theme: Theme, done: (result: PickResult) => void, requestRender: () => void, context?: string) {
+export function createPicker(question: string, options: Option[], multi: boolean, theme: Theme, done: (result: PickResult) => void, requestRender: () => void, context?: string, maxHeight: () => number = () => Infinity) {
 	const rows = [...options, { label: OTHER_OPTION }];
 	const checked = new Set<number>();
 	let cursor = 0;
 	let hint = "";
+	// Taller than the terminal: show a window. It follows the cursor until PgUp/PgDn scrolls it.
+	let scroll = 0;
+	let follow = true;
+	let page = 1;
 	let cache: string[] | undefined;
 	const refresh = () => { cache = undefined; requestRender(); };
 	const finish = (indices: number[]) => {
@@ -52,6 +56,12 @@ export function createPicker(question: string, options: Option[], multi: boolean
 	function handleInput(data: string) {
 		hint = "";
 		if (matchesKey(data, Key.escape)) return done(null);
+		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
+			scroll += matchesKey(data, Key.pageUp) ? -page : page;
+			follow = false;
+			return refresh();
+		}
+		follow = true;
 		if (matchesKey(data, Key.up)) cursor = (cursor + rows.length - 1) % rows.length;
 		else if (matchesKey(data, Key.down)) cursor = (cursor + 1) % rows.length;
 		else if (/^[1-9]$/.test(data) && Number(data) <= rows.length) {
@@ -71,11 +81,12 @@ export function createPicker(question: string, options: Option[], multi: boolean
 		if (cache) return cache;
 		const w = Math.max(20, width);
 		const lines: string[] = [];
+		let active = [0, 0];
+		let firstRow = 0;
 		const wrap = (prefix: string, text: string) => {
 			const pad = visibleWidth(prefix);
 			wrapTextWithAnsi(text, Math.max(10, w - pad)).forEach((line, i) => lines.push((i === 0 ? prefix : " ".repeat(pad)) + line));
 		};
-		lines.push(theme.fg("accent", "─".repeat(w)));
 		if (context?.trim()) {
 			for (const line of contextLines(context)) line.heading ? wrap(" ", theme.fg("accent", theme.bold(line.text))) : line.text ? wrap(" ", theme.fg("text", line.text)) : lines.push("");
 			lines.push("");
@@ -83,18 +94,36 @@ export function createPicker(question: string, options: Option[], multi: boolean
 		wrap(" ", theme.bold(question));
 		if (multi) wrap(" ", theme.fg("muted", "Select all that apply."));
 		lines.push("");
+		firstRow = lines.length;
 		rows.forEach((row, i) => {
-			const active = i === cursor;
-			const mark = multi ? (checked.has(i) ? "[x]" : "[ ]") : (active ? "(•)" : "( )");
+			const start = lines.length;
+			const isActive = i === cursor;
+			const mark = multi ? (checked.has(i) ? "[x]" : "[ ]") : (isActive ? "(•)" : "( )");
 			const label = `${mark} ${i + 1}. ${row.label}`;
-			wrap(active ? theme.fg("accent", "› ") : "  ", theme.fg(active || checked.has(i) ? "accent" : "text", label));
+			wrap(isActive ? theme.fg("accent", "› ") : "  ", theme.fg(isActive || checked.has(i) ? "accent" : "text", label));
 			if ("description" in row && row.description) wrap("        ", theme.fg("muted", row.description));
+			if (isActive) active = [start, lines.length];
 		});
 		lines.push("");
 		if (hint) wrap(" ", theme.fg("warning", hint));
-		wrap(" ", theme.fg("dim", multi ? "↑↓ move · Space toggle · 1-9 toggle · Enter submit · Esc cancel" : "↑↓ move · Enter or 1-9 select · Esc cancel"));
-		lines.push(theme.fg("accent", "─".repeat(w)));
-		return (cache = lines);
+		const keys = multi ? "↑↓ move · Space toggle · 1-9 toggle · Enter submit · Esc cancel" : "↑↓ move · Enter or 1-9 select · Esc cancel";
+		const border = theme.fg("accent", "─".repeat(w));
+		// Two border rows plus one scroll-status row.
+		const room = Math.max(3, Math.floor(maxHeight()) - 3);
+		if (lines.length + 1 <= room + 1) {
+			wrap(" ", theme.fg("dim", keys));
+			return (cache = [border, ...lines, border]);
+		}
+		page = Math.max(1, room - 2);
+		// Prefer showing every option; otherwise just the active one.
+		const [top, bottom] = lines.length - firstRow <= room ? [firstRow, lines.length] : active;
+		if (follow) scroll = Math.min(Math.max(scroll, bottom - room), top);
+		scroll = Math.max(0, Math.min(scroll, lines.length - room));
+		const above = scroll, below = lines.length - room - scroll;
+		const status = [above && `↑ ${above} more`, below && `↓ ${below} more`, "PgUp/PgDn scroll", keys].filter(Boolean).join(" · ");
+		const footer: string[] = [];
+		wrapTextWithAnsi(theme.fg("dim", status), w - 1).slice(0, 1).forEach(line => footer.push(" " + line));
+		return (cache = [border, ...lines.slice(scroll, scroll + room), ...footer, border]);
 	}
 
 	return { render, handleInput, invalidate: () => { cache = undefined; } };
@@ -127,7 +156,7 @@ export default function (pi: ExtensionAPI) {
 			const decided = entries.length ? `# Decided so far (${entries.length})\n${ledgerSummary(entries)}` : "";
 			const shown = [params.context?.trim(), decided].filter(Boolean).join("\n") || undefined;
 			const multi = params.multiSelect === true;
-			const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker(params.question, params.options, multi, theme, done, () => tui.requestRender(), shown));
+			const result = await ctx.ui.custom<PickResult>((tui, theme, _keys, done) => createPicker(params.question, params.options, multi, theme, done, () => tui.requestRender(), shown, () => tui.terminal.rows));
 			if (!result) return cancelled();
 			const answers = result.indices.map(i => params.options[i].label);
 			let typed: string | undefined;
