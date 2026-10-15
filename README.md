@@ -20,6 +20,8 @@ Coding agents are fast and confident, and both traits hurt in systems where a mi
 8. **Quiet by default, detail on demand.** Routine results are one line. Full evidence, transcripts and diffs are kept, and shown when you ask (Ctrl+O, `/agents`, `/diff`, `harness_check status`).
 9. **Cost is your call.** The harness asks before it runs tasks in parallel, since that trades tokens for wall-clock time. It stops on provider quota or auth errors instead of retrying into a bill.
 
+The planning flow puts these principles into practice by following the process a careful engineering team already uses; see [The planner flow](#the-planner-flow-a-software-teams-workflow-replayed).
+
 ## What you get
 
 | Feature | What it does |
@@ -126,6 +128,32 @@ Switch with `/mode discuss|plan|execute`, Tab, or Ctrl+Alt+M. Autocomplete moves
 | `/build-and-review <request>` | Scout, executor, adversarial reviewer, then an executor fix run only if the reviewer found problems. | Yes |
 
 Any command stops and reports `PROVIDER UNAVAILABLE` on structured AI-provider quota or auth errors (429/402/401/403) instead of retrying the provider. Public-document fetch errors are source-access failures: continue investigating the authorized task using alternate official sources. Failed gates block dependent tasks and checkpoint approval while recovery proceeds within scope.
+
+## The planner flow: a software team's workflow, replayed
+
+The planner isn't a prompt that says "think step by step". It replays the process a good engineering team already uses to ship risky backend changes, with each role filled by an agent or by you. Teams settled on these steps because each one catches a different kind of mistake early, when it's cheap. Agents make the same mistakes as people, only faster, so they need the same steps.
+
+| A real team does | The harness does | What it catches |
+|---|---|---|
+| Roadmap: break an initiative into milestones | **Mission**: an ordered list of goals in `mission.md`, each with a status | Building features in the wrong order, or all at once |
+| Onboarding and code reading before designing | **Scout** reads the code this goal touches, plus the `## Deferred` notes earlier goals left | Designs that ignore how the code actually works |
+| Design review: a senior engineer grills the proposal | **Grill interview**: the main session asks one decision at a time through the `question` tool, answers from the code where it can, and keeps a decision ledger so nothing is asked twice | Unstated assumptions and hand-waved edge cases (retries, ordering, key lifecycle) |
+| Design doc with decisions and open questions | **Goal file**: every decision written down; anything unresolved goes under `## Open questions` with a recommended default | Decisions made silently by whoever wrote the code |
+| Ticket breakdown: small, reviewable tickets with acceptance criteria | **Tasks**: about 1-3 files each, with `Files`, `Change`, `Verify` (the acceptance test), `Depends` | Large changes nobody can review properly |
+| Test plan agreed before coding | **`harness_check define`**: the contract and checks are fixed before the executor writes code and can't be weakened later | Tests rewritten to pass after the fact |
+| Sprint planning: who works on what in parallel | **Parallel batches**: tasks with no dependency between them and no shared files can run at once, each in its own worktree, but only after you agree to the token cost | Merge conflicts from overlapping work, and spending that wasn't approved |
+| Pull requests with CI | **Executor + verification gates**: a task is done only when its registered checks pass on the exact files; `checkpoint` commits only the named files | "Works on my machine", and unrelated changes slipping into a commit |
+| Code review before merge | **Checkpoints**: you decide where review happens and who does it. The `reviewer` agent gets the contract and the commits but not the executor's own conclusions; a manual review gives you per-file line ranges and the diff in pi | Reviews that rubber-stamp the author's story instead of reading the code |
+| Tech-debt backlog | **`## Deferred`**: known gaps are recorded and revisited when a later goal needs them, not built speculatively now | Gold-plating, and gaps that get forgotten |
+| Milestone sign-off | **Goal `done`**, and `/plan <mission>` moves on to the next goal | Starting the next feature on an unfinished one |
+| Whiteboard session, no laptops | **`/discuss`**: an agent with no tools and no project context, for thinking out loud | Jumping into code before the idea holds up |
+
+Two things differ from a human team, on purpose:
+
+- **Every agent starts fresh.** A human engineer remembers yesterday's shortcuts and assumptions. Here each subagent gets only its task and the files it reads, so anything a later step depends on has to be written into the goal file. The plan becomes the team's shared memory, and it can be audited.
+- **The rules are enforced, not just agreed.** A team trusts people to follow the process. Here the tool allowlists, the sandbox and the verification gates make skipping a step impossible rather than merely discouraged: a planner has no bash, an executor can't claim done without evidence, and a reviewer never sees the author's own justification.
+
+The result is slower than letting one agent edit freely; the measured cost was about 1.5× on small bugs (see [Status](#status)). That's the same trade a team makes with design review and CI: you pay up front so that mistakes in money-moving or cryptographic code turn up in review, not in production.
 
 ## Micro-managed planning: missions and goals
 
