@@ -56,8 +56,10 @@ export function createPicker(question: string, options: Option[], multi: boolean
 	function handleInput(data: string) {
 		hint = "";
 		if (matchesKey(data, Key.escape)) return done(null);
-		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
-			scroll += matchesKey(data, Key.pageUp) ? -page : page;
+		// Fullscreen mode scrolls the chat on PgUp/PgDn before this list sees them, so Ctrl+U/D also scroll.
+		const up = matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("u"));
+		if (up || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("d"))) {
+			scroll += up ? -page : page;
 			follow = false;
 			return refresh();
 		}
@@ -120,7 +122,7 @@ export function createPicker(question: string, options: Option[], multi: boolean
 		if (follow) scroll = Math.min(Math.max(scroll, bottom - room), top);
 		scroll = Math.max(0, Math.min(scroll, lines.length - room));
 		const above = scroll, below = lines.length - room - scroll;
-		const status = [above && `↑ ${above} more`, below && `↓ ${below} more`, "PgUp/PgDn scroll", keys].filter(Boolean).join(" · ");
+		const status = [above && `↑ ${above} more`, below && `↓ ${below} more`, "Ctrl+U/D scroll", keys].filter(Boolean).join(" · ");
 		const footer: string[] = [];
 		wrapTextWithAnsi(theme.fg("dim", status), w - 1).slice(0, 1).forEach(line => footer.push(" " + line));
 		return (cache = [border, ...lines.slice(scroll, scroll + room), ...footer, border]);

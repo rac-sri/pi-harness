@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "1.0.3",
+  "lastChangelogVersion": "1.5.2",
   "defaultProvider": "openai",
   "defaultModel": "gpt-6.1-sol",
   "packages": [
@@ -11,5 +11,10 @@
   "skills": [
     "!/Users/rachitsrivastava/.pi/agent/skills/ethskills/**",
     "!/Users/rachitsrivastava/.agents/skills/better-auth-best-practices/*/**"
-  ]
+  ],
+  "extensionChangelogVersions": {
+    "{\"source\":\"npm:pi-web-access\",\"scope\":\"user\"}": "0.36.0",
+    "{\"source\":\"npm:pi-advisor-flow\",\"scope\":\"user\"}": "0.11.1",
+    "{\"source\":\"npm:pi-lens\",\"scope\":\"user\"}": "4.3.0"
+  }
 }

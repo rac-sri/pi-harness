@@ -36,9 +36,12 @@ import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { plannerPrompt } from "./plans.ts";
 import { loadRuntimeConfig } from "./runtime.ts";
 import { createViewer, type ViewerRun } from "./viewer.ts";
+import { FULL_OVERLAY } from "../lib/vim-keys.ts";
 import { acquireWriter } from "../lib/writer-lock.ts";
 import { TokenSpeed } from "../lib/token-speed.ts";
 import { FILE_MUTATING_TOOLS } from "../lib/tools.ts";
+import { createStreakTracker } from "../lib/stuck.ts";
+import { appendDispatchRecord, createDispatchMetrics, stopKind } from "../lib/dispatch-metrics.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -60,6 +63,7 @@ function formatUsageStats(
 		cacheWrite: number;
 		cost: number;
 		contextTokens?: number;
+		peakContextTokens?: number;
 		turns?: number;
 		outputRate?: number;
 	},
@@ -74,7 +78,7 @@ function formatUsageStats(
 	if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
 	if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
 	if (usage.contextTokens && usage.contextTokens > 0) {
-		parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+		parts.push(`ctx:${formatTokens(usage.contextTokens)}${usage.peakContextTokens && usage.peakContextTokens > usage.contextTokens ? ` (peak ${formatTokens(usage.peakContextTokens)})` : ""}`);
 	}
 	if (model) parts.push(model);
 	return parts.join(" ");
@@ -158,6 +162,7 @@ interface UsageStats {
 	cacheWrite: number;
 	cost: number;
 	contextTokens: number;
+	peakContextTokens?: number;
 	turns: number;
 	outputRate?: number;
 }
@@ -364,6 +369,8 @@ export async function runSingleAgent(
 		if (agent.tools.some(tool => hashlineTools.has(tool))) args.push("-e", path.join(getAgentDir(), "extensions", "hashline", "tool.ts"));
 	}
 	if (agent.name === "executor") args.push("-e", path.join(getAgentDir(), "extensions", "edit-approval", "tool.ts"));
+	// Children with tools get the repeated-call reminder; the dispatcher ends stuck runs below.
+	if (agent.tools === undefined || agent.tools.length > 0) args.push("-e", path.join(getAgentDir(), "extensions", "stuck", "tool.ts"));
 	const inheritsDispatchConfig = !agent.model;
 	const model = agent.model ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
@@ -382,6 +389,7 @@ export async function runSingleAgent(
 	let writer: ReturnType<typeof acquireWriter> | undefined;
 	let runtime: ReturnType<typeof loadRuntimeConfig>;
 	let lastUpdate = 0;
+	const metrics = createDispatchMetrics();
 
 	const currentResult: SingleResult = {
 		id: randomUUID(),
@@ -412,7 +420,7 @@ export async function runSingleAgent(
 	};
 
 	try {
-		runtime = loadRuntimeConfig();
+		runtime = loadRuntimeConfig(undefined, { role: agent.name, model });
 		if (!args.includes("--thinking") && !/:(off|minimal|low|medium|high|xhigh)$/.test(model ?? "") && runtime.thinking[agent.name]) args.push("--thinking", runtime.thinking[agent.name]);
 		if (agent.tools === undefined || agent.tools.some(t => FILE_MUTATING_TOOLS.has(t) || t === "bash" || t === "harness_check") && !["scout", "reviewer"].includes(agent.name)) writer = acquireWriter(cwd ?? defaultCwd);
 		emitUpdate(true);
@@ -450,6 +458,7 @@ export async function runSingleAgent(
 			const checkpointRuns = new Map<string, boolean>();
 			// tool_execution_end carries no args; remember them from tool_execution_start.
 			const toolArgs = new Map<string, any>();
+			const streaks = createStreakTracker();
 			let killTimer: NodeJS.Timeout | undefined;
 			let closed = false;
 			const stopForLimit = (reason: string) => {
@@ -504,6 +513,7 @@ export async function runSingleAgent(
 				}
 				if (event.type === "tool_execution_start") {
 					if (event.toolCallId) toolArgs.set(event.toolCallId, event.args ?? {});
+					metrics.toolStart(event.toolName, event.args);
 					if (FILE_MUTATING_TOOLS.has(event.toolName) || event.toolName === "bash" || event.toolName === "debug") {
 						const activeRun = [...checkpointRuns.keys()].at(-1);
 						if (activeRun) checkpointRuns.set(activeRun, false);
@@ -526,6 +536,9 @@ export async function runSingleAgent(
 						if (["complete", "checkpoint"].includes(action)) checkpointRuns.set(args.run, !event.isError && ["verified", "committed"].includes(event.result?.details?.phase));
 						if (["implemented", "verify"].includes(action)) checkpointRuns.set(args.run, false);
 					}
+					metrics.toolEnd(Boolean(event.isError));
+					const streak = streaks.record(event.toolName, args, Boolean(event.isError));
+					if (streak.stop) stopForLimit(`STUCK: ${streak.failing} identical failing ${event.toolName} calls in a row`);
 					currentResult.phase = event.isError ? "tool failed" : "working";
 					currentResult.liveTool = undefined;
 					emitUpdate(true);
@@ -548,6 +561,8 @@ export async function runSingleAgent(
 							currentResult.usage.cacheWrite += usage.cacheWrite || 0;
 							currentResult.usage.cost += usage.cost?.total || 0;
 							currentResult.usage.contextTokens = usage.totalTokens || 0;
+							metrics.context(currentResult.usage.contextTokens);
+							currentResult.usage.peakContextTokens = metrics.peakContextTokens;
 						}
 						if (currentResult.usage.turns >= runtime.maxTurns) stopForLimit(`Dispatch reached ${runtime.maxTurns} turns`);
 						if (currentResult.usage.output >= runtime.maxOutputTokens) stopForLimit(`Dispatch reached ${runtime.maxOutputTokens} output tokens`);
@@ -632,6 +647,13 @@ export async function runSingleAgent(
 		return currentResult;
 	} finally {
 		writer?.release();
+		appendDispatchRecord(getAgentDir(), {
+			at: new Date(currentResult.startedAt ?? Date.now()).toISOString(), role: agent.name, model: currentResult.model ?? model,
+			outcome: signal?.aborted ? "aborted" : isFailedResult(currentResult) ? "failed" : "ok",
+			stop: stopKind(currentResult.errorMessage), elapsedMs: Date.now() - (currentResult.startedAt ?? Date.now()),
+			turns: currentResult.usage.turns, ...metrics.snapshot(),
+			input: currentResult.usage.input, output: currentResult.usage.output, cacheRead: currentResult.usage.cacheRead, cost: currentResult.usage.cost,
+		});
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);
@@ -688,7 +710,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async () => { editApproval.reset(); liveRuns.length = 0; });
 	const openViewer = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
-		await ctx.ui.custom<void>((tui, theme, _keys, done) => createViewer(() => sessionRuns(ctx.sessionManager.getEntries()), theme, formatToolCall, done, () => tui.requestRender(), () => tui.terminal.rows));
+		await ctx.ui.custom<void>((tui, theme, _keys, done) => createViewer(() => sessionRuns(ctx.sessionManager.getEntries()), theme, formatToolCall, done, () => tui.requestRender(), () => tui.terminal.rows), FULL_OVERLAY);
 	};
 	pi.registerShortcut(Key.ctrlAlt("a"), { description: "Show subagent runs and transcripts", handler: openViewer });
 	pi.registerCommand("agents", { description: "Show subagent runs and their full transcripts", handler: async (_args, ctx) => openViewer(ctx) });

@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, generateDiffString, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { canonicalPath } from "../creds-guard.ts";
 import { applyEdits, createHashlineStore, type HashlineEdit, renderRead } from "../lib/hashline.ts";
+import { syntaxErrors, syntaxNote } from "../lib/syntax-check.ts";
 
 const IMAGE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
@@ -32,6 +33,15 @@ async function readText(file: string, display: string): Promise<string> {
 export default function hashline(pi: ExtensionAPI) {
 	const store = createHashlineStore();
 	const nativeRead = createReadToolDefinition(process.cwd());
+
+	// Full-file writes get the same syntax check as hashline_edit.
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "write" || event.isError || typeof event.input.path !== "string") return;
+		let file: string, text: string;
+		try { file = canonicalPath(event.input.path, ctx.cwd); text = await fs.readFile(file, "utf8"); } catch { return; }
+		const syntax = await syntaxErrors(file, text, event.input.path);
+		if (syntax) return { content: [...event.content, { type: "text", text: syntaxNote(syntax) }] };
+	});
 
 	pi.registerTool({
 		...nativeRead,
@@ -68,7 +78,8 @@ export default function hashline(pi: ExtensionAPI) {
 				if (signal?.aborted) throw new Error("Operation aborted");
 				await fs.writeFile(file, result.raw);
 				const diff = generateDiffString(before, result.raw);
-				return { content: [{ type: "text", text: result.text }], details: { diff: diff.diff, firstChangedLine: result.firstChangedLine, recovered: result.recovered } };
+				const syntax = await syntaxErrors(file, result.raw, params.path);
+				return { content: [{ type: "text", text: syntax ? result.text + syntaxNote(syntax) : result.text }], details: { diff: diff.diff, firstChangedLine: result.firstChangedLine, recovered: result.recovered } };
 			});
 		},
 	});

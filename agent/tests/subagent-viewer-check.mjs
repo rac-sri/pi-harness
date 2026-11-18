@@ -24,7 +24,7 @@ viewer.handleInput("\x1b[A"); viewer.handleInput("\r");
 const opened = viewer.render(60);
 assert.ok(opened.length <= 12, "transcript fits the terminal height");
 assert.match(opened.join("\n"), /T1 done/, "opens at the end of the transcript");
-viewer.handleInput("g");
+viewer.handleInput("g"); viewer.handleInput("g");
 assert.match(viewer.render(60).join("\n"), /executor · done/, "g jumps to the top");
 viewer.handleInput("\x1b");
 assert.match(viewer.render(60).join("\n"), /Subagents \(2\)/, "Esc returns to the list");

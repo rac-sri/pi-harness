@@ -44,3 +44,21 @@ viewer.handleInput("\x1b"); viewer.handleInput("\x1b");
 assert.ok(closed, "Esc goes back, then closes");
 fs.rmSync(repo, { recursive: true });
 console.log("Passed 12 diff viewer checks.");
+
+// Vim motions: counts, Ctrl+D/U, gg/G, {/} between hunks.
+{
+	const { createVimKeys, applyMotion } = await import("../extensions/lib/vim-keys.ts");
+	const vim = createVimKeys();
+	assert.equal(vim.feed("5"), "pending"); assert.deepEqual(vim.feed("j"), { kind: "line", by: 5 }, "count prefix");
+	assert.deepEqual(vim.feed("\x04"), { kind: "halfPage", by: 1 }, "Ctrl+D"); assert.deepEqual(vim.feed("\x15"), { kind: "halfPage", by: -1 }, "Ctrl+U");
+	assert.deepEqual(vim.feed("\x06"), { kind: "page", by: 1 }, "Ctrl+F"); assert.deepEqual(vim.feed("\x02"), { kind: "page", by: -1 }, "Ctrl+B");
+	assert.equal(vim.feed("g"), "pending"); assert.deepEqual(vim.feed("g"), { kind: "top" }, "gg");
+	assert.deepEqual(vim.feed("G"), { kind: "bottom" }); vim.feed("4"); vim.feed("2"); assert.deepEqual(vim.feed("G"), { kind: "goto", line: 42 }, "42G");
+	assert.deepEqual(vim.feed("0"), { kind: "panStart" }, "0 without a count pans to column 0");
+	assert.equal(applyMotion({ kind: "halfPage", by: 1 }, 0, 20, 100), 10);
+	assert.equal(applyMotion({ kind: "section", by: 1 }, 0, 10, 100, [5, 30, 60]), 5);
+	assert.equal(applyMotion({ kind: "section", by: 2 }, 0, 10, 100, [5, 30, 60]), 30);
+	assert.equal(applyMotion({ kind: "section", by: -1 }, 30, 10, 100, [5, 30, 60]), 5);
+	assert.equal(applyMotion({ kind: "bottom" }, 0, 10, 100), 90);
+	console.log("Passed 14 vim motion checks.");
+}

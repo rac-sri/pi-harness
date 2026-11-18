@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { root, jiti } from "./lib/loader.mjs";
+process.env.PI_DISPATCH_METRICS = "off"; // Fake dispatches must not land in the real metrics log.
 
 if (process.argv.includes("--mode")) {
   const hooks = new Map();

@@ -38,6 +38,17 @@ try {
   fs.writeFileSync(path.join(repo, "code.txt"), "implemented\n");
   await action({ action: "implemented" });
   const passed = await action({ action: "verify", check: "unit" });
+  const again = await action({ action: "verify", check: "unit" });
+  check(again.reused && again.evidence.id === passed.evidence.id, "unchanged files reuse passing evidence instead of rerunning");
+  check(/evidence reused, not rerun/.test(formatHarnessResult({ action: "verify", check: "unit" }, again)), "reuse is stated in the result");
+  const forced = await action({ action: "verify", check: "unit", force: true });
+  check(!forced.reused && forced.evidence.id !== passed.evidence.id, "force reruns the check");
+  check(!(await action({ action: "verify", check: "seed", seed: "repro 42" })).reused, "a check with no passing evidence runs");
+  check(!(await action({ action: "verify", check: "seed", seed: "repro 43" })).reused, "a different seed runs again");
+  fs.writeFileSync(path.join(repo, "code.txt"), "implemented again\n");
+  check(!(await action({ action: "verify", check: "unit" })).reused, "changed files run again");
+  fs.writeFileSync(path.join(repo, "code.txt"), "implemented\n");
+  await action({ action: "verify", check: "unit" });
   const concise = formatHarnessResult({ action: "verify", check: "unit" }, passed, "verbose command output".repeat(1000));
   check(/^unit: passed \([\d.]+s\)\.$/.test(concise) && concise.length < 80, "successful verification omits verbose output and metadata");
   check(fs.existsSync(passed.evidence.outputPath) && passed.evidence.before.length === 64, "concise output preserves durable evidence");
@@ -109,5 +120,12 @@ try {
   fs.writeFileSync(runtimeFile, JSON.stringify({ maxTurns: 0 })); assert.throws(() => loadRuntimeConfig(runtimeFile), /Invalid maxTurns/); checks++;
   fs.writeFileSync(runtimeFile, JSON.stringify({ thinking: { scout: "bogus" } })); assert.throws(() => loadRuntimeConfig(runtimeFile), /thinking level/); checks++;
   fs.writeFileSync(runtimeFile, JSON.stringify({ maxTurns: 5 })); check(loadRuntimeConfig(runtimeFile).maxTurns === 5, "runtime edits reload");
+  fs.writeFileSync(runtimeFile, JSON.stringify({ maxTurns: 40, timeoutSeconds: 600, roles: { executor: { maxTurns: 60, timeoutSeconds: 900 } }, models: { "openai/small": { maxTurns: 90 } } }));
+  const scoped = (role, model) => loadRuntimeConfig(runtimeFile, { role, model });
+  check(scoped("scout").maxTurns === 40 && scoped("executor").maxTurns === 60 && scoped("executor").timeoutSeconds === 900, "role limits override global ones");
+  check(scoped("executor", "openai/small:high").maxTurns === 90 && scoped("executor", "openai/small").timeoutSeconds === 900, "model limits override role ones, thinking suffix ignored");
+  check(!("roles" in scoped("executor")) && !("models" in scoped("executor")), "override tables are not part of the resolved config");
+  fs.writeFileSync(runtimeFile, JSON.stringify({ roles: { executor: { maxTurn: 5 } } })); assert.throws(() => loadRuntimeConfig(runtimeFile), /Unknown limit roles.executor.maxTurn/); checks++;
+  fs.writeFileSync(runtimeFile, JSON.stringify({ models: { "a/b": { maxTurns: -1 } } })); assert.throws(() => loadRuntimeConfig(runtimeFile), /Invalid models.a\/b.maxTurns/); checks++;
   console.log(`Passed ${checks} verification and writer-lock checks.`);
 } finally { fs.rmSync(fixture, { recursive: true, force: true }); }

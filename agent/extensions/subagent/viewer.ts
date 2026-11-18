@@ -4,6 +4,7 @@
  * call with its output, and the final report. Opened with Ctrl+Shift+A or /agents.
  */
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { applyMotion, applySelection, createVimKeys, type Motion } from "../lib/vim-keys.ts";
 
 type Theme = { fg: (color: any, text: string) => string; bold: (text: string) => string };
 type Part = { type: string; text?: string; thinking?: string; name?: string; arguments?: Record<string, unknown> };
@@ -68,7 +69,11 @@ export function createViewer(runs: () => ViewerRun[], theme: Theme, formatCall: 
 	let open: ViewerRun | undefined;
 	let scroll = 0;
 	let follow = true;
-	let lastPage = 1;
+	// Motions need the visible height, so they are applied at the next render.
+	const pending: Motion[] = [];
+	const vim = createVimKeys();
+	// List moves apply at once (so Enter opens what was just selected), sized by the last render.
+	let listRoom = 10;
 	// Live runs change without input; redraw while anything is running.
 	const timer = setInterval(() => { if (runs().some(run => run.exitCode === -1)) requestRender(); }, 500);
 	const close = () => { clearInterval(timer); done(); };
@@ -77,19 +82,12 @@ export function createViewer(runs: () => ViewerRun[], theme: Theme, formatCall: 
 		const list = runs();
 		if (!open) {
 			if (matchesKey(data, Key.escape) || data === "q") return close();
-			if (matchesKey(data, Key.up)) selected = Math.max(0, selected - 1);
-			else if (matchesKey(data, Key.down)) selected = Math.min(list.length - 1, selected + 1);
-			else if (matchesKey(data, Key.enter) && list[selected]) { open = list[selected]; scroll = 0; follow = true; }
-			else return;
-			return requestRender();
-		}
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.left) || data === "q") { open = undefined; return requestRender(); }
-		const step = matchesKey(data, Key.up) || data === "k" ? -1 : matchesKey(data, Key.down) || data === "j" ? 1
-			: matchesKey(data, Key.pageUp) || data === "b" ? -lastPage : matchesKey(data, Key.pageDown) || data === " " ? lastPage
-			: matchesKey(data, Key.home) || data === "g" ? -Infinity : matchesKey(data, Key.end) || data === "G" ? Infinity : 0;
-		if (!step) return;
-		follow = step === Infinity;
-		scroll = step === -Infinity ? 0 : step === Infinity ? Number.MAX_SAFE_INTEGER : scroll + step;
+			if ((matchesKey(data, Key.enter) || matchesKey(data, Key.right) || data === "l") && list[selected]) { open = list[selected]; scroll = 0; follow = true; pending.length = 0; return requestRender(); }
+		} else if (matchesKey(data, Key.escape) || matchesKey(data, Key.left) || data === "h" || data === "q") { open = undefined; return requestRender(); }
+		const motion = vim.feed(data);
+		if (!motion || motion === "pending") return;
+		if (open) pending.push(motion);
+		else selected = applySelection(motion, selected, listRoom, list.length);
 		requestRender();
 	}
 
@@ -102,6 +100,8 @@ export function createViewer(runs: () => ViewerRun[], theme: Theme, formatCall: 
 			const lines = [border, " " + theme.bold(`Subagents (${list.length})`), ""];
 			if (!list.length) lines.push(theme.fg("muted", " No subagent runs in this session yet."));
 			const room = rows - 6;
+			listRoom = room;
+			selected = Math.max(0, Math.min(selected, list.length - 1));
 			const first = Math.max(0, Math.min(selected - room + 1, list.length - room));
 			list.slice(first, first + room).forEach((run, i) => {
 				const index = first + i;
@@ -109,17 +109,23 @@ export function createViewer(runs: () => ViewerRun[], theme: Theme, formatCall: 
 				const head = `${active ? theme.fg("accent", "› ") : "  "}${statusIcon(run, theme)} ${theme.fg(active ? "accent" : "text", run.agent)} ${theme.fg("dim", status(run))}  `;
 				lines.push(truncateToWidth(head + theme.fg("muted", oneLine(run.task)), w));
 			});
-			lines.push("", theme.fg("dim", " ↑↓ select · Enter open transcript · Esc close"), border);
+			lines.push("", theme.fg("dim", truncateToWidth(" j/k select · Ctrl+D/U half page · gg/G top/end · Enter open transcript · Esc close", w)), border);
 			return lines;
 		}
-		const body = transcript(open, theme, formatCall).flatMap(line => line ? wrapTextWithAnsi(line, w - 1).map(part => " " + part) : [""]);
+		// Section starts (headings and tool calls) are the {/} jump targets.
+		const body: string[] = [];
+		const starts: number[] = [];
+		for (const line of transcript(open, theme, formatCall)) {
+			if (/^(── |→ |⏳ )/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))) starts.push(body.length);
+			body.push(...(line ? wrapTextWithAnsi(line, w - 1).map(part => " " + part) : [""]));
+		}
 		const room = rows - 3;
-		lastPage = Math.max(1, room - 2);
 		const max = Math.max(0, body.length - room);
-		scroll = follow ? max : Math.max(0, Math.min(scroll, max));
-		if (scroll === max) follow = true;
+		if (follow) scroll = max;
+		for (const motion of pending.splice(0)) { scroll = applyMotion(motion, scroll, room, body.length, starts); follow = scroll >= max; }
+		scroll = Math.max(0, Math.min(scroll, max));
 		const position = body.length > room ? `${scroll + 1}-${Math.min(body.length, scroll + room)} of ${body.length}` : `${body.length} lines`;
-		const footer = ` ${position} · ↑↓/jk line · PgUp/PgDn page · g/G top/end · Esc back`;
+		const footer = ` ${position} · j/k [count] · Ctrl+D/U · Ctrl+F/B · gg/G · {/} section · Esc back`;
 		return [border, ...body.slice(scroll, scroll + room), theme.fg("dim", truncateToWidth(footer, w)), border].map(line => visibleWidth(line) > w ? truncateToWidth(line, w) : line);
 	}
 

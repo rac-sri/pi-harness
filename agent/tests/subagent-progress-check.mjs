@@ -15,6 +15,14 @@ if (process.argv.includes("--mode")) {
   let callId = 0;
   const harness = (action, run, phase) => { const toolCallId = `h${++callId}`; emit({ type: "tool_execution_start", toolCallId, toolName: "harness_check", args: { action, run } }); emit({ type: "tool_execution_end", toolCallId, toolName: "harness_check", result: { details: { phase } }, isError: false }); };
   if (task === "WAIT") { setInterval(() => {}, 1000); }
+  else if (task === "STUCK") {
+    // The same failing call over and over, then hang: only stuck detection can end it before the deadline.
+    for (let i = 0; i < 8; i++) {
+      emit({ type: "tool_execution_start", toolCallId: `s${i}`, toolName: "bash", args: { command: "cargo test", timeout: 60 } });
+      emit({ type: "tool_execution_end", toolCallId: `s${i}`, toolName: "bash", isError: true });
+    }
+    setInterval(() => {}, 1000);
+  }
   else {
     emit({ type: "message_start", message: { role: "assistant" } });
     emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta" }, message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking recovery invariant" }] } });
@@ -45,6 +53,7 @@ if (process.argv.includes("--mode")) {
   const agent = { name: "test", source: "user", systemPrompt: "", tools: [] };
   const details = results => ({ mode: "single", agentScope: "user", projectAgentsDir: null, results });
   let checks = 0;
+  const check = (condition, label) => { assert.ok(condition, label); checks++; };
   try {
     const failedResult = { agent: "executor", exitCode: 1, stopReason: "error", stderr: "", messages: [] };
     for (const output of ["Public-document fetch returned HTTP 403", "Source API rate limit: 429", "Investigating quota handling at line 401"]) {
@@ -96,9 +105,16 @@ if (process.argv.includes("--mode")) {
       const changed = await subagent.runSingleAgent(fixture, {}, [executor], "executor", task, undefined, undefined, undefined, undefined, details);
       assert.match(changed.errorMessage, /completion rejected/); checks++;
     }
+    const stuck = await subagent.runSingleAgent(fixture, {}, [agent], "test", "STUCK", undefined, undefined, undefined, undefined, details);
+    assert.equal(stuck.stopReason, "error"); assert.match(stuck.errorMessage, /STUCK: 8 identical failing bash calls/); checks++;
     config({ maxTurns: 1 });
     const turns = await subagent.runSingleAgent(fixture, {}, [agent], "test", "STREAM", undefined, undefined, undefined, undefined, details);
     assert.match(turns.errorMessage, /turns/); checks++;
+    const records = fs.readFileSync(path.join(fixture, "harness/metrics/dispatches.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const stuckRecord = records.find(r => r.stop === "stuck");
+    check(stuckRecord && stuckRecord.outcome === "failed" && stuckRecord.toolCalls === 8 && stuckRecord.failedToolCalls === 8 && stuckRecord.tools.bash === 8, "a stuck dispatch is logged with its tool calls");
+    check(records.some(r => r.outcome === "ok" && r.role === "test" && r.turns === 1 && r.tools.read === 1) && records.every(r => !("task" in r)), "successful dispatches are logged without task text");
+    check(records.some(r => r.stop === "deadline") && records.some(r => r.stop === "max-output") && records.some(r => r.stop === "max-turns") && records.some(r => r.stop === "completion-rejected"), "early stops are classified");
     console.log(`Passed ${checks} streaming, rendering, budget, and completion checks.`);
   } finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;

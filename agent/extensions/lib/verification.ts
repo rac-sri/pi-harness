@@ -25,7 +25,19 @@ export interface RunState {
 }
 export interface HarnessInput {
 	action: string; run: string; contract?: string; checks?: Check[];
-	check?: string; seed?: string; timeoutSeconds?: number; files?: string[]; message?: string;
+	check?: string; seed?: string; timeoutSeconds?: number; files?: string[]; message?: string; force?: boolean;
+}
+
+/**
+ * The latest passing evidence for `check` that still holds: same command and seed, recorded on
+ * exactly `tree`, log intact. Re-running it on the same files proves nothing new (Fan et al. 2026:
+ * strong models waste turns on redundant post-edit verification), so verify returns it instead.
+ */
+export function reusableEvidence(state: RunState, check: Check, tree: string, seed?: string): Evidence | undefined {
+	const latest = state.evidence.filter(item => item.check === check.id).at(-1);
+	if (!latest?.passed || latest.before !== tree || latest.after !== tree || latest.command !== check.command || latest.seed !== seed) return undefined;
+	try { if (digest(fs.readFileSync(latest.outputPath)) !== latest.outputHash) return undefined; } catch { return undefined; }
+	return latest;
 }
 
 async function execute(ops: BashOperations, cwd: string, command: string, signal?: AbortSignal, timeout = 60) {
@@ -141,6 +153,11 @@ export async function runHarnessAction(input: HarnessInput, cwd: string, ops: Ba
 			const timeout = input.timeoutSeconds ?? 300;
 			if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 3600) throw new Error("Verification timeout must be 1–3600 seconds");
 			const before = await fingerprint(repo, ops, signal);
+			const reused = input.force ? undefined : reusableEvidence(state, check, before, input.seed);
+			if (reused) {
+				try { assertVerified(state, before); state.phase = "verified"; state.verifiedTree = before; save(state); } catch { /* Other checks remain pending or stale. */ }
+				return { evidence: reused, phase: state.phase, stateFile, failure: undefined as string | undefined, reused: true };
+			}
 			const head = await execute(ops, repo, `${git} rev-parse --verify HEAD`, signal);
 			const gitTree = await execute(ops, repo, `${git} rev-parse --verify 'HEAD^{tree}'`, signal);
 			const id = randomUUID();
@@ -166,7 +183,7 @@ export async function runHarnessAction(input: HarnessInput, cwd: string, ops: Ba
 			state.verifiedTree = undefined;
 			save(state);
 			try { assertVerified(state, after); state.phase = "verified"; state.verifiedTree = after; save(state); } catch { /* Other checks remain pending or stale. */ }
-			return { evidence, phase: state.phase, stateFile, failure };
+			return { evidence, phase: state.phase, stateFile, failure, reused: false };
 		} else if (input.action === "complete" || input.action === "checkpoint") {
 			const tree = await fingerprint(repo, ops, signal);
 			assertVerified(state, tree);
@@ -201,6 +218,7 @@ export function formatHarnessResult(input: HarnessInput, result: Awaited<ReturnT
 	if (input.action === "status") return JSON.stringify(result, null, 2);
 	if ("evidence" in result && !Array.isArray(result.evidence)) {
 		const evidence = result.evidence;
+		if ("reused" in result && result.reused) return `${input.check}: passed (files unchanged since the passing run at ${evidence.startedAt}; evidence reused, not rerun). Pass force: true only to rerun deliberately.`;
 		if (evidence.passed) return `${input.check}: passed (${(evidence.durationMs / 1000).toFixed(1)}s).`;
 		const reason = result.failure ?? (evidence.before !== evidence.after
 			? "Checkout changed during verification."
@@ -239,6 +257,7 @@ export function registerVerification(pi: ExtensionAPI, getOperations: () => Bash
 			checks: Type.Optional(Type.Array(Type.Object({ id: Type.String(), command: Type.String(), property: Type.String() }))),
 			check: Type.Optional(Type.String()), seed: Type.Optional(Type.String()), timeoutSeconds: Type.Optional(Type.Number()),
 			files: Type.Optional(Type.Array(Type.String())), message: Type.Optional(Type.String()),
+			force: Type.Optional(Type.Boolean({ description: "verify only: rerun even when passing evidence for these exact files, command and seed already exists" })),
 		}),
 		renderCall(args, theme) {
 			const label = args.action === "verify" ? `CHECK ${args.check ?? "…"}` : `CHECK ${args.action ?? "…"}`;

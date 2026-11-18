@@ -1,5 +1,5 @@
 {
-  "executor": "opencode-go/qwen3.8-flash",
+  "executor": "opencode-go/deepseek-v4.1-flash",
   "advisor": "openai/gpt-6-astra",
   "advisorPlanGate": false,
   "advisorCompletionGate": false,

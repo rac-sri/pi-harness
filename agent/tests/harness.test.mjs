@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+process.env.PI_DISPATCH_METRICS = "off"; // Fake dispatches must not land in the real metrics log.
 
 // This file also acts as a harmless fake Pi child for dispatch/cancellation tests.
 if (process.argv.includes("--mode")) {
@@ -191,9 +192,9 @@ if (process.argv.includes("--mode")) {
 	await assert.rejects(sandboxHooks.get("user_bash")().operations.exec(), /Sandbox unavailable/); checks++;
 
 	const loader = await import(path.join(modules, "@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"));
-	const loaded = await loader.loadExtensions(["creds-guard.ts", "compact-read.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts", "question.ts", "implement-picker.ts"].map(p => path.join(root, "extensions", p)), root);
+	const loaded = await loader.loadExtensions(["creds-guard.ts", "compact-read.ts", "modes/index.ts", "subagent/index.ts", "sandbox/index.ts", "advisor-patch-guard.ts", "question.ts", "implement-picker.ts", "url-guard.ts"].map(p => path.join(root, "extensions", p)), root);
 	assert.deepEqual(loaded.errors, []); checks++;
 	const executorLoaded = await loader.loadExtensions(["creds-guard.ts", "sandbox/index.ts", "hashline/tool.ts"].map(p => path.join(root, "extensions", p)), root);
 	assert.deepEqual(executorLoaded.errors, []); checks++;
-	console.log(`Passed ${checks} harness regression checks; all eight main-session extensions and the executor hashline set load.`);
+	console.log(`Passed ${checks} harness regression checks; all nine main-session extensions and the executor hashline set load.`);
 }

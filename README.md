@@ -29,14 +29,17 @@ The planning flow puts these principles into practice by following the process a
 | Modes | The main session is always in `discuss`, `plan` or `execute`. Each mode changes which tools exist and blocks the rest. Press Tab to cycle; the footer shows the current mode. |
 | Subagents | `scout`, `planner`, `executor`, `reviewer` and `discuss`, each a fresh Pi process with its own context window, toolset and model. |
 | Mission/goal planner | `/plan` interviews you about one feature at a time, splits it into small verifiable tasks, and lets you place checkpoints, each with manual, automatic or combined review. |
-| Verification gates | `harness_check` records which checks must pass, runs them, and fingerprints the files they ran against. Changing a file afterwards invalidates the result. |
+| Verification gates | `harness_check` records which checks must pass, runs them, and fingerprints the files they ran against. Changing a file afterwards invalidates the result. Re-verifying unchanged files reuses the passing evidence instead of rerunning. |
 | Checkpoint commits | The executor commits only the files it names, and only after every check passes. |
-| Sandbox and credentials guard | Bash runs under macOS Seatbelt. A separate guard blocks file tools from reading `.env`, SSH keys, `auth.json` and personal notes. |
+| Sandbox and credentials guard | Bash runs under macOS Seatbelt. A separate guard blocks file tools from reading `.env`, SSH keys, `auth.json` and personal notes, and `url-guard` blocks web fetches whose URL carries a credential. `scripts/guard-replay.mjs` replays saved sessions through the guards to catch false positives after a rule change. |
+| Dispatch metrics | Every subagent run appends turns, tool calls, failures, re-edits, peak context, cost and why it stopped to `harness/metrics/dispatches.jsonl`; `scripts/dispatch-stats.mjs` summarises them per role and model. |
 | Live progress | Subagent panels stream thinking, text, tool calls, elapsed time and tokens per second. |
 | `question` tool | Every interview question appears as a keyboard list: radio buttons for one answer, checkboxes (`multiSelect`) when several apply. The recommended answer comes first, and the last row is always "type your own answer". Available in all modes. |
 | Advisor | `pi-advisor-flow` pairs the main model with a stronger reviewer that steps in after repeated failures. |
 | Code intelligence and debugging | The executor has Lens (diagnostics, symbols, LSP, AST search/replace) and a batch LLDB `debug` tool. |
 | Edit approval | Executors ask before editing: apply, skip, or edit without asking for this session. Asking is the default. |
+| Stuck detection | A subagent repeating the same tool call with the same arguments gets a one-time "change approach" note on the 5th repeat; 8 identical failing calls end the run as `STUCK` instead of burning the turn budget. |
+| Syntax check after edits | Every executor `hashline_edit` or `write` to a Rust, Go, Python or TS/JS file is parsed straight away, and a syntax error is appended to that edit's result, before any test run. |
 | Tagged line edits | The executor edits through `hashline_edit`: `read` tags each file's exact content, and an edit applies only if the cited lines are unchanged, so it can't silently overwrite a file that moved underneath it. |
 | Parallel batches | Between two checkpoints, `/implement` groups tasks that don't depend on each other and touch different files, then asks before running them as parallel executors in separate git worktrees. |
 | Checkpoint review | A manual checkpoint shows every changed file with `+/−` counts and changed line ranges, the commits and the check results. From there you can open the diff in pi or as an HTML page. |
@@ -67,7 +70,7 @@ flowchart LR
 ## Status
 
 - Covered by tests: modes, sandbox policy, credential guard, verification evidence, checkpoint commits, writer lock, subagent streaming and budgets, the `question` tool.
-- Measured once: on four small domain bugs with tests hidden, the harness and a plain agent on the same model both solved 8/8. The harness took about 1.5× the time and cost, and the only thing it added was recorded evidence. Harder cases are needed to tell them apart (`agent/tests/domain-eval.mjs`).
+- Measured once: on four small domain bugs with tests hidden, the harness and a plain agent on the same model both solved 8/8. The harness took about 1.5× the time and cost, and the only thing it added was recorded evidence. The eval now has three harder tasks (Raft log append, an anti-replay window, RFC 6962 Merkle proofs), validates every task with mutation testing before use, and compares arms with paired McNemar tests over repeated runs (`agent/tests/domain-eval.mjs`). It has not been run live since.
 - Run end to end: `/implement` on a goal file through sequential tasks, an automatic review and a manual checkpoint.
 - Parallel worktrees: a sandboxed commit from a worktree and the cherry-pick back are tested (`worktree-sandbox-check.mjs`). A full parallel `/implement` batch has not been run yet, nor has the new manual-review flow (line summary, in-pi diff, HTML diff).
 
@@ -236,12 +239,15 @@ When the last checkpoint passes, the goal is marked `done` and the next `/plan p
 | Ctrl+Alt+A or `/agents` | A full-screen list of this session's subagent runs; live ones update in place. Enter opens a run's whole transcript: task, thinking, assistant text, every tool call with its output, the final report. While a run is live, the transcript follows its newest output until you scroll up. |
 | `/diff [RANGE \| --worktree] [-- PATH...]` | A full-screen diff. With no range it shows uncommitted changes, or the last commit if there are none. The file list has `+/−` and changed line ranges; Enter shows a file's coloured diff with old and new line numbers. |
 | `node agent/scripts/review-diff.mjs [--html] …` | The same summary in a normal shell, and with `--html` a self-contained diff page in `/tmp/pi-review/` |
+| `node agent/scripts/dispatch-stats.mjs [--since DATE]` | Per role and model: runs, successes, turn and peak-context percentiles, tool calls per success, re-edits, early stops (stuck, max turns, deadline, …) |
+| `node agent/scripts/guard-replay.mjs [--accept]` | Every tool call in saved sessions replayed through today's guards; reports calls whose verdict changed. `--accept` records reviewed changes so later runs show only new ones. |
+| `node agent/scripts/mine-sessions.mjs` | Repair episodes in saved sessions (a check fails, files change, the same check passes), redacted, as eval-task candidates in `harness/evals/candidates.jsonl` |
 
-Keys in both viewers: ↑↓ or j/k scroll, PgUp/PgDn page, g/G top/end, Esc back. The diff viewer adds ←→ to pan wide lines and n/p for the next or previous file.
+Both viewers take vim motions: j/k with counts (`5j`), Ctrl+D/U half page, Ctrl+F/B page, Ctrl+E/Y line, `gg`/`G`/`42G`, and `{`/`}` to jump between hunks (diff) or sections and tool calls (transcript). Arrows, PgUp/PgDn and Home/End work too, and Esc goes back. The diff viewer adds h/l to pan wide lines, `0` back to column 0, and n/p for the next or previous file. Both open as full-screen overlays, because in pi's fullscreen mode PgUp/PgDn would otherwise scroll the chat behind them.
 
 For uncommitted work, name the paths: `/diff --worktree -- src migrations`. Untracked files are included only under the paths you give, so scratch files stay out, and key and env files (`*.pem`, `*.key`, `.env*`) are never shown.
 
-Long question lists, like the `/implement` goal picker, scroll when they're taller than the terminal: the options stay in view and PgUp/PgDn scroll the context above them.
+Long question lists, like the `/implement` goal picker, scroll when they're taller than the terminal: the options stay in view and Ctrl+U/D (or PgUp/PgDn outside fullscreen mode) scroll the context above them.
 
 ## Agents
 
@@ -275,6 +281,7 @@ fixed checks                     command, records        current files; checkpoi
 - Bound to the files. Evidence records HEAD, tree, a fingerprint of the source files and an output hash. Any later edit (including `hashline_edit`), write, bash call, debug session or LSP operation invalidates completion, so the checks must be rerun.
 - Enforced by the dispatcher. An executor that finishes without a successful `complete` or `checkpoint` after its last change is reported as rejected.
 - Scoped commits. `checkpoint` commits only the files it names. It refuses if anything is already staged or other files have changed, and it never resets or discards work.
+- No redundant reruns. `verify` on a check whose latest evidence passed on these exact files, with the same command and seed, returns that evidence instead of running again, and says so. `force: true` reruns deliberately.
 - Stored out of reach. Run state lives in `~/.pi/agent/harness/runs/<repo-hash>/<run>/`, which agents can't write to directly.
 
 Plan checkboxes are a summary. The `harness_check` state is the record of truth.
@@ -284,8 +291,9 @@ Plan checkboxes are a summary. The `harness_check` state is the record of truth.
 1. Capability scoping. Each subagent gets an explicit `--tools` allowlist. An empty or invalid list means zero tools, never all tools.
 2. OS sandbox for bash. macOS Seatbelt via `@anthropic-ai/sandbox-runtime`, configured in `agent/extensions/sandbox.json`. Credential paths and the vault are denied. If the sandbox fails to start, bash is blocked rather than run unsandboxed.
 3. Credentials guard. `agent/extensions/creds-guard.ts` blocks read, write, edit, grep, find, ls and bash on `.env*` (except examples), `~/.ssh`, `auth.json`, keys, and the vault outside `Agents/`. It resolves `..` and symlinks before matching.
-4. Mode gates. Unknown plugin tools are blocked in discuss and plan modes. LSP rename, code actions and AST replace are blocked outside execute.
-5. Read-only children. Scout and reviewer bash calls go through the same read-only command policy as plan mode.
+4. URL guard. Web tools run outside the bash sandbox, so `agent/extensions/url-guard.ts` blocks any `url`/`urls` argument carrying a known credential format (AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, Google keys, private keys, JWTs), URL-decoded too.
+5. Mode gates. Unknown plugin tools are blocked in discuss and plan modes. LSP rename, code actions and AST replace are blocked outside execute.
+6. Read-only children. Scout and reviewer bash calls go through the same read-only command policy as plan mode.
 
 Escape hatches you have to choose explicitly: `pi --no-sandbox`, and `pi --debug-unsandboxed`, which lets only `debug` calls run outside Seatbelt so LLDB can control processes.
 
@@ -296,7 +304,7 @@ All files live in `agent/` and are re-read on every launch or dispatch unless no
 | File | Controls |
 |---|---|
 | `agents/models.json` | The source of truth for models. `default` plus one entry per role, `provider/model[:thinking]`. `null` means use `default`. Keys starting with `_` are comments. |
-| `agents/runtime.json` | Per-role thinking level, deadline (seconds), max turns, max output tokens, UI update interval |
+| `agents/runtime.json` | Per-role thinking level, deadline (seconds), max turns, max output tokens, UI update interval. Optional `roles.<agent>` and `models.<provider/model>` tables override `timeoutSeconds`, `maxTurns` and `maxOutputTokens`; a model entry wins over its role's, so a slower or weaker model can get a longer budget. |
 | `agents/planner.json` | Plan root, e.g. `{"directory": "~/plans/{project}"}`. `{project}` expands to the repo name. |
 | `advisor.json` | `pi-advisor-flow`: executor and advisor models (they must differ) and which gates are on |
 | `settings.json` | Pi packages, skill include/exclude globs, Pi's fallback default provider/model |
@@ -341,7 +349,7 @@ Restart Pi or run `/reload` after changing extensions or `settings.json`.
     │   ├── hashline/         # executor-only tagged read + hashline_edit (loaded by the dispatcher)
     │   ├── advisor-patch-guard.ts
     │   └── lib/              # verification, writer lock, read-only policy, debugger, token speed, hashline, diff parsing
-    ├── scripts/review-diff.mjs # checkpoint review summary and HTML diff
+    ├── scripts/              # review-diff (checkpoint review), dispatch-stats, guard-replay, mine-sessions
     ├── patches/              # local fix for pi-advisor-flow's missing session id
     ├── npm/                  # Pi packages: pi-advisor-flow, pi-lens, pi-web-access
     ├── skills/ethskills/     # git submodule (excluded from prompts by default)
@@ -359,7 +367,7 @@ Run from `~/.pi` in a normal shell. Inside Pi's sandboxed shell, the full harnes
 for t in harness.test modes-check verification-check subagent-progress-check hashline-check implement-picker-check \
          subagent-viewer-check diff-viewer-check edit-mismatch-check worktree-sandbox-check \
          debugger-check edit-approval-check advisor-config-check advisor-patch-guard \
-         advisor-session-header typecheck; do
+         advisor-session-header stuck-check syntax-check guard-check mine-sessions-check domain-eval typecheck; do
   node agent/tests/$t.mjs || echo "FAILED: $t"
 done
 ```
@@ -368,9 +376,9 @@ done
 |---|---|
 | `harness.test.mjs` | Command policy, path guards, mode gates, zero-tool dispatch, sandbox policy, plan storage, extension loading |
 | `modes-check.mjs` | Mode switching, tool gates, prompt-section stability, keybindings |
-| `verification-check.mjs` | Evidence freshness, failure evidence, scoped checkpoint commits, writer lock, concise result rendering |
-| `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection |
-| `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files |
+| `verification-check.mjs` | Evidence freshness, failure evidence, evidence reuse on unchanged files, scoped checkpoint commits, writer lock, role/model runtime limits, concise result rendering |
+| `subagent-progress-check.mjs` | Live streaming and rendering, tok/s, deadlines, token/turn budgets, completion rejection, a stuck child ended as `STUCK`, dispatch metrics and stop classification |
+| `hashline-check.mjs` | Tagged read/edit: stale and ambiguous edits rejected, shift recovery, served-line checks, line endings, tool wrapper on real files, syntax notes on broken edits and writes |
 | `implement-picker-check.mjs` | Goal discovery by repo path across projects, next-goal ordering, input rewrite, pass-through of normal requests |
 | `subagent-viewer-check.mjs` | Transcript contents (tool output included), live runs, list/transcript navigation and height limits |
 | `diff-viewer-check.mjs` | Worktree diffs with untracked files only under given paths, secret files excluded, line ranges, viewer navigation |
@@ -379,8 +387,12 @@ done
 | `edit-approval-check.mjs` | Default prompts, denial/cancellation, session opt-out/reset, and executor approval before writing |
 | `debugger-check.mjs` | `debug` input validation: workspace-only binaries, no newline injection, valid breakpoints |
 | `advisor-*.mjs` | Advisor config validation and the session-id patch |
+| `stuck-check.mjs` | Identical-call streaks: argument order ignored, one reminder at 5, stop at 8 failures, resets on success or a different call |
+| `syntax-check.mjs` | Post-edit parse checks per language: errors cite path and line, valid strip-unsupported TS and `mod` declarations pass, long output clipped |
+| `guard-check.mjs` | URL guard: credential formats found (encoded too), ordinary URLs allowed, search queries ignored; session replay reports only changed verdicts |
+| `mine-sessions-check.mjs` | Repair episodes need an edit between failure and success; guard blocks ignored; home directory, emails and credentials redacted |
 | `typecheck.mjs` | Strict TypeScript over all extensions. Prints `SKIPPED` if `tsc` isn't installed. |
-| `domain-eval.mjs` | Broken vs reference fixtures (lost ack, double apply, nonce reuse, bad signature). `--agent` runs the live executor and costs provider usage. |
+| `domain-eval.mjs` | Offline: validates 7 tasks (lost ack, double apply, nonce reuse, bad signature, Raft append, anti-replay window, Merkle proofs): reference passes twice, broken/stub/missing source fail, ≥80% of mutants killed (~25 s). `--agent` runs them live and costs provider usage: `--arms baseline,harness,lean,full`, `--runs N`, `--hidden-tests`. Reports pass rate, cost, tool calls per solve, re-edits, peak context, difficulty per task and McNemar p-values between arms. |
 
 ## Troubleshooting
 
@@ -395,7 +407,7 @@ done
 | Advisor calls fail with `MissingSessionID` | The patch was lost after `pi update`. Run `node agent/patches/advisor-session-header.mjs`, then `/reload`. |
 | Typecheck says `SKIPPED` | `npm i -g typescript` |
 | `Could not find edits[N]` on a goal file | The file changed since the model last read it, usually because an executor ticked a box. The error now lists the current nearest lines; the model should re-read and retry the edit, not redo the task. |
-| A question list runs off the screen | It scrolls: PgUp/PgDn move the context, ↑↓ the options. `/reload` if it doesn't. |
+| A question list runs off the screen | It scrolls: Ctrl+U/D move the context, ↑↓ the options. `/reload` if it doesn't. |
 | Can't see what a subagent did | Ctrl+Alt+A (or `/agents`), then Enter on the run. |
 | `/diff` misses new files | Untracked files need paths: `/diff --worktree -- <dir>`. |
 

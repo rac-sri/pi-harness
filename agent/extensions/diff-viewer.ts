@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { applyMotion, applySelection, createVimKeys, FULL_OVERLAY, type Motion } from "./lib/vim-keys.ts";
 import { diffText, formatRanges, parseDiff, repoPaths, sourceLabel, summary, type DiffFile, type DiffSource } from "./lib/review-diff.ts";
 
 type Theme = { fg: (color: any, text: string) => string; bold: (text: string) => string };
@@ -27,27 +28,31 @@ export function createDiffViewer(files: DiffFile[], label: string, theme: Theme,
 	const short = (file: string) => file.slice(prefix.length);
 	let selected = 0;
 	let open: number | undefined;
-	let scroll = 0, column = 0, page = 1;
+	let scroll = 0, column = 0;
+	// Motions need the visible height, so they are applied at the next render.
+	const pending: Motion[] = [];
+	const vim = createVimKeys();
+	// List moves apply at once (so Enter opens what was just selected), sized by the last render.
+	let listRoom = 10;
 
-	const openFile = (index: number) => { open = index; scroll = 0; column = 0; };
+	const openFile = (index: number) => { open = index; scroll = 0; column = 0; pending.length = 0; };
 
 	function handleInput(data: string) {
 		if (open === undefined) {
 			if (matchesKey(data, Key.escape) || data === "q") return done();
-			if (matchesKey(data, Key.up) || data === "k") selected = Math.max(0, selected - 1);
-			else if (matchesKey(data, Key.down) || data === "j") selected = Math.min(files.length - 1, selected + 1);
-			else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.right)) && files.length) openFile(selected);
+			if ((matchesKey(data, Key.enter) || matchesKey(data, Key.right) || data === "l") && files.length) return openFile(selected);
+			const motion = vim.feed(data);
+			if (motion && motion !== "pending") selected = applySelection(motion, selected, listRoom, files.length);
 			return;
 		}
 		if (matchesKey(data, Key.escape) || data === "q") { selected = open; open = undefined; return; }
 		if (data === "n" || data === "]") { if (open < files.length - 1) openFile(open + 1); return; }
 		if (data === "p" || data === "[") { if (open > 0) openFile(open - 1); return; }
-		if (matchesKey(data, Key.left) || data === "h") { column = Math.max(0, column - 8); return; }
-		if (matchesKey(data, Key.right) || data === "l") { column += 8; return; }
-		const step = matchesKey(data, Key.up) || data === "k" ? -1 : matchesKey(data, Key.down) || data === "j" ? 1
-			: matchesKey(data, Key.pageUp) || data === "b" ? -page : matchesKey(data, Key.pageDown) || data === " " ? page
-			: matchesKey(data, Key.home) || data === "g" ? -Infinity : matchesKey(data, Key.end) || data === "G" ? Infinity : 0;
-		scroll = step === -Infinity ? 0 : step === Infinity ? Number.MAX_SAFE_INTEGER : scroll + step;
+		const motion = vim.feed(data);
+		if (!motion || motion === "pending") return;
+		if (motion.kind === "pan") column = Math.max(0, column + motion.by);
+		else if (motion.kind === "panStart") column = 0;
+		else pending.push(motion);
 	}
 
 	function render(width: number): string[] {
@@ -61,13 +66,14 @@ export function createDiffViewer(files: DiffFile[], label: string, theme: Theme,
 			const lines = [border, ` ${theme.bold("Diff")} ${theme.fg("dim", `· ${label} · ${files.length} files${prefix ? ` in ${prefix}` : ""} ·`)} ${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `−${removed}`)}`, ""];
 			if (!files.length) lines.push(theme.fg("muted", " No changes."));
 			const room = rows - 6;
+			listRoom = room;
 			const first = Math.max(0, Math.min(selected - Math.floor(room / 2), files.length - room));
 			files.slice(first, first + room).forEach((f, i) => {
 				const active = first + i === selected;
 				const where = f.ranges.length ? formatRanges(f.ranges).join(", ") : "(removed or binary)";
 				lines.push(truncateToWidth(`${active ? theme.fg("accent", "› ") : "  "}${theme.fg(active ? "accent" : "text", short(f.file))}  ${counts(f)}  ${theme.fg("dim", where)}`, w, "…"));
 			});
-			lines.push("", theme.fg("dim", truncateToWidth(" ↑↓ select · Enter view diff · Esc close", w)), border);
+			lines.push("", theme.fg("dim", truncateToWidth(" j/k select · Ctrl+D/U half page · gg/G top/end · Enter view diff · Esc close", w)), border);
 			return lines;
 		}
 		const file = files[open];
@@ -82,11 +88,12 @@ export function createDiffViewer(files: DiffFile[], label: string, theme: Theme,
 			return theme.fg("dim", `${num(r.old)} ${num(r.new)} │`) + theme.fg(color, sign + slice(r.text, column, textWidth));
 		});
 		const room = rows - 4;
-		page = Math.max(1, room - 2);
+		const hunks = file.rows.flatMap((r, i) => r.kind === "hunk" ? [i] : []);
+		for (const motion of pending.splice(0)) scroll = applyMotion(motion, scroll, room, body.length, hunks);
 		scroll = Math.max(0, Math.min(scroll, body.length - room));
 		const header = ` ${theme.fg("dim", prefix)}${theme.bold(short(file.file))}  ${counts(file)}  ${theme.fg("dim", `file ${open + 1}/${files.length}${column ? ` · col ${column + 1}` : ""}`)}`;
 		const position = body.length > room ? `${scroll + 1}-${Math.min(body.length, scroll + room)} of ${body.length}` : `${body.length} lines`;
-		const footer = ` ${position} · ↑↓ line · PgUp/PgDn page · g/G top/end · ←→ pan · n/p next/prev file · Esc files`;
+		const footer = ` ${position} · j/k [count] · Ctrl+D/U · Ctrl+F/B · gg/G · {/} hunk · h/l/0 pan · n/p file · Esc files`;
 		return [border, truncateToWidth(header, w, "…"), ...body.slice(scroll, scroll + room).map(line => visibleWidth(line) > w ? truncateToWidth(line, w) : line), theme.fg("dim", truncateToWidth(footer, w)), border];
 	}
 
@@ -112,7 +119,7 @@ async function show(ctx: ExtensionContext, source: DiffSource) {
 	await ctx.ui.custom<void>((tui, theme, _keys, done) => {
 		const viewer = createDiffViewer(files, sourceLabel(source), theme, done, () => tui.terminal.rows);
 		return { ...viewer, handleInput: (data: string) => { viewer.handleInput(data); tui.requestRender(); } };
-	});
+	}, FULL_OVERLAY);
 	return files;
 }
 
